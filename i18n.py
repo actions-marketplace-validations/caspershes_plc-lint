@@ -29,12 +29,27 @@ def resolve_locale(host, cookie):
     return DEFAULT_LANG
 
 
+def plural_ru(n, one, few, many):
+    """«1 проверка · 2 проверки · 47 проверок». Правило школьное, но его забывают,
+    и строка с жёстким окончанием верна только для части чисел: «44 проверки»
+    читается нормально, а «47 проверки» — нет."""
+    n = abs(int(n))
+    if n % 100 in range(11, 15):
+        return many
+    last = n % 10
+    return one if last == 1 else few if last in (2, 3, 4) else many
+
+
 def t(key, lang, **kw):
     """Строка по ключу для языка lang; fallback на DEFAULT_LANG, затем на сам ключ."""
     s = STRINGS.get(lang, {}).get(key)
     if s is None:
         s = STRINGS[DEFAULT_LANG].get(key, key)
     if kw:
+        # Падеж существительного зависит от числа, и подставлять его должен не
+        # вызывающий: он про число ничего не знает, а строк с числами много.
+        if lang == "ru" and "n" in kw and "{checks}" in s:
+            kw = dict(kw, checks=plural_ru(kw["n"], "проверка", "проверки", "проверок"))
         try:
             s = s.format(**kw)
         except (KeyError, IndexError, ValueError):
@@ -129,8 +144,19 @@ STRINGS = {
                       "Один .exe, без установки и без Python: перетащите на него экспорт — "
                       "рядом появится тот же отчёт."),
     "index.local_btn": "Скачать для Windows",
-    "index.local_note": "Linux/macOS: <code>python cli.py project.xml</code> · исходники на GitHub",
+    "index.local_note": "Читает и выгрузку CODESYS <code>.export</code>: там работают все правила по программам <strong>плюс пять</strong>, которых нет в веб-версии — снятый тип датчика на занятом канале, ненастроенный выход, модуль вне опроса и две находки по экранам. Linux/macOS: <code>python cli.py project.xml</code> · исходники на GitHub",
     "index.path_upload": "Проверить прямо здесь",
+    "index.learn_link": "Разборы отдельных ошибок →",
+    "learn.title": "Ошибки, которые компилятор пропускает — PLC Lint",
+    "learn.meta_desc": ("Разборы дефектов, которые собираются без единого предупреждения в CODESYS "
+                        "и TwinCAT: что происходит на контроллере, почему компилятор молчит и как "
+                        "найти это у себя в проекте."),
+    "learn.h1": "Ошибки, которые компилятор принимает — по одной",
+    "learn.lead": ("Каждая страница — один дефект, который собирается без предупреждения: что он "
+                   "делает на контроллере, почему компилятор не помогает и как найти его у себя "
+                   "в проекте, с инструментом или руками."),
+    "learn.nav": "Все разборы",
+    "learn.more": "Другие разборы",
     "index.ci_note": ('Проект лежит в git? <code>uses: caspershes/plc-lint@v1</code> — '
                       '<a href="https://github.com/marketplace/actions/plc-lint" rel="noopener" '
                       'data-ym-goal="ci_action">GitHub Action</a> роняет сборку на находках '
@@ -138,7 +164,7 @@ STRINGS = {
     "index.sev_high": "Из-за этого контроллер встанет или пойдёт вразнос ({n})",
     "index.sev_medium": "Тихие дефекты: работает, но не так, как задумано ({n})",
     "index.sev_low": "Стиль и сопровождаемость ({n})",
-    "index.rule_total": "· всего {n} проверки",
+    "index.rule_total": "· всего {n} {checks}",
     # первый экран прямо предлагает загрузить ЧУЖОЙ код («приняли чужой ПЛК-проект?») —
     # значит и ответ на «а что вы с ним сделаете» должен стоять здесь, а не в подвале
     "index.privacy": ('Файл обрабатывается <strong>в памяти</strong> и на диск не пишется — '
@@ -434,6 +460,9 @@ STRINGS = {
     "demo.end_guide": "Как выгрузить PLCopenXML из CODESYS",
     "meta.default_desc": ("Онлайн-линтер экспортов CODESYS/PLCopenXML: загрузите .xml — получите "
                           "отчёт качества с находками, которые компилятор не ловит. Бесплатно."),
+    # Подпись к карточке ссылки: её читают вслух скринридеры и показывают те клиенты,
+    # которые картинку не загрузили.
+    "meta.og_alt": "Карточка PLC Lint: примеры находок, которые компилируются без ошибок",
     "contact.title": "Обратная связь · PLC Lint",
     "contact.h1": "Обратная связь",
     "contact.lead": "Критика, баг, идея правила или тарифа — пишите. Читаем всё, отвечаем по делу.",
@@ -733,8 +762,19 @@ STRINGS = {
                       "— no install, no Python, <strong>no network calls at all</strong>. Drop an "
                       "export onto it and the same report appears next to the file."),
     "index.local_btn": "Download for Windows",
-    "index.local_note": "Linux/macOS: <code>python cli.py project.xml</code> · MIT on GitHub",
+    "index.local_note": "It also reads a CODESYS <code>.export</code>: every program rule works there, <strong>plus five</strong> the hosted version does not have — a sensor type cleared on a wired channel, an unconfigured output, a module excluded from polling, and two screen findings. Linux/macOS: <code>python cli.py project.xml</code> · MIT on GitHub",
     "index.path_upload": "Check it here",
+    "index.learn_link": "Bugs explained one by one →",
+    "learn.title": "PLC bugs the compiler accepts — PLC Lint",
+    "learn.meta_desc": ("Detailed write-ups of defects that compile clean in CODESYS and TwinCAT: "
+                        "what happens on the controller, why the compiler stays silent, and how "
+                        "to find each one in your own project."),
+    "learn.h1": "Bugs the compiler accepts, one at a time",
+    "learn.lead": ("Each page takes a single defect that builds without a warning: what it does on "
+                   "the controller, why the compiler can't help, and how to find it in your own "
+                   "project — with or without a tool."),
+    "learn.nav": "All write-ups",
+    "learn.more": "Other write-ups",
     "index.ci_note": ('Project in git? <code>uses: caspershes/plc-lint@v1</code> — '
                       '<a href="https://github.com/marketplace/actions/plc-lint" rel="noopener" '
                       'data-ym-goal="ci_action">the GitHub Action</a> breaks the build on '
@@ -1043,6 +1083,7 @@ STRINGS = {
     "demo.end_guide": "How to export PLCopenXML from CODESYS",
     "meta.default_desc": ("Online linter for CODESYS/PLCopenXML exports: upload a .xml and get a "
                           "quality report with bugs the compiler doesn't catch. Free."),
+    "meta.og_alt": "PLC Lint card: examples of bugs that compile without errors",
     "contact.title": "Feedback · PLC Lint",
     "contact.h1": "Feedback",
     "contact.lead": "Criticism, a bug, a rule or pricing idea — send it. We read everything.",
@@ -1325,6 +1366,20 @@ ACCEPTANCE_Q = {
     "param-channel-mismatch": "В вызове блока параметр одного канала получает сигнал другого канала ({n}). Это осознанная перекрёстная связь или следы копирования?",
     "index-mismatch": "Строка расставляет индексы иначе, чем остальные строки той же группы ({n}). Это исключение по проекту?",
     "self-enable": "Команда пуска получена из выхода, который в том же скане зависит от обратной связи этого же оборудования ({n}). Как контур запускается из состояния «стоит»?",
+    "timer-reset-by-own-condition": "Таймер отсчитывает по переменной, которую гасят ниже в той же ветви ({n}). Какая выдержка здесь задумана и чем она обеспечена?",
+    "timer-rearmed-by-own-branch": "Задержка выключения считает по переменной, которую ниже в той же ветви взводят заново ({n}). Чем здесь обеспечено само выключение?",
+    "timer-off-delay-in-own-branch": "Задержка выключения вызывается только внутри ветви, требующей её же вход ({n}). Чем тогда отсчитывается выдержка после снятия команды?",
+    "fb-call-overwritten": "Экземпляр ФБ вызывается дважды подряд с разными входами ({n}). Какой из двух вызовов должен работать?",
+    "edge-lost-in-own-branch": "Детектор фронта вызывается только внутри ветви, требующей его же вход ({n}). Сколько раз он должен срабатывать на серию событий?",
+    "fb-preset-missing": "У экземпляра нигде не задана уставка ({n}). Какая выдержка здесь подразумевалась?",
+    "always-false-condition": "Есть условия, которые после подстановки значений этого же скана не выполняются никогда ({n}). Что должно было происходить по этим условиям?",
+    "signal-without-source": "Сигнал аварии читается в условиях, но его никто не формирует ({n}). Откуда он должен приходить — не дошла привязка или проверка написана «на будущее»?",
+    "unsigned-vs-zero": "Беззнаковая переменная сравнивается с нулём так, что результат известен заранее ({n}). Эта защита должна была работать?",
+    "channel-sensor-off": "У канала, заведённого на переменную, не выбран тип датчика ({n}). Этот вход действительно не используется?",
+    "channel-output-off": "У выхода, привязанного к переменной, не выбран тип сигнала ({n}). Чем тогда управляет эта переменная?",
+    "module-disabled": "Модуль исключён из опроса ({n}). Это осознанно — или осталось с наладки?",
+    "visu-two-labels": "Одна переменная выведена на экране под разными подписями ({n}). Какая из подписей верна?",
+    "visu-index-mismatch": "Номер в подписи не совпадает с индексом переменной ({n}). Оператор видит тот объект, что написан?",
     "array-bounds": "Обращение за границу массива ({n}). Чем это ограничено в рантайме?",
     "infinite-loop": "Цикл без условия выхода ({n}). Что удержит скан задачи от зависания?",
     "modbus-address-duplicate": "Двум и более модулям назначен один адрес на шине ({n}). Какой из них отвечает на опрос?",
@@ -1361,6 +1416,20 @@ ACCEPTANCE_Q = {
     "param-channel-mismatch": "In a block call one channel's parameter is fed from another channel ({n}). Is that a deliberate cross-link or a leftover from copying?",
     "index-mismatch": "A line indexes differently from the rest of its group ({n}). Is that a project-specific exception?",
     "self-enable": "A start command is derived from an output that, within the same scan, depends on this equipment's own feedback ({n}). How does the loop start from standstill?",
+    "timer-reset-by-own-condition": "A timer runs on a variable that is cleared further down the same branch ({n}). What delay was intended here, and what provides it?",
+    "timer-rearmed-by-own-branch": "An off-delay runs on a variable that is re-armed further down the same branch ({n}). What actually ends the delay here?",
+    "timer-off-delay-in-own-branch": "An off-delay is only called inside a branch that requires its own input ({n}). What counts the delay once the command is dropped?",
+    "fb-call-overwritten": "An FB instance is called twice in a row with different inputs ({n}). Which of the two calls is meant to work?",
+    "edge-lost-in-own-branch": "An edge detector is only called inside a branch that requires its own input ({n}). How many times is it meant to fire over a series of events?",
+    "fb-preset-missing": "The instance has no preset set anywhere ({n}). What delay was intended here?",
+    "always-false-condition": "Some conditions never hold once same-scan assignments are substituted ({n}). What was supposed to happen on those conditions?",
+    "signal-without-source": "An alarm signal is read in conditions but nothing ever sets it ({n}). Where should it come from — a missing binding, or a check written for later?",
+    "unsigned-vs-zero": "An unsigned variable is compared against zero so that the outcome is known in advance ({n}). Was that guard supposed to work?",
+    "channel-sensor-off": "A channel wired to a variable has no sensor type selected ({n}). Is that input really unused?",
+    "channel-output-off": "An output bound to a variable has no signal type selected ({n}). What does that variable actually drive?",
+    "module-disabled": "A module is excluded from polling ({n}). Deliberate, or left over from commissioning?",
+    "visu-two-labels": "One variable is shown on the screen under different captions ({n}). Which caption is the correct one?",
+    "visu-index-mismatch": "A caption number does not match the variable index ({n}). Does the operator see the object the caption names?",
     "array-bounds": "An access beyond the array bounds ({n}). What limits it at runtime?",
     "infinite-loop": "A loop with no exit condition ({n}). What stops the task scan from hanging?",
     "modbus-address-duplicate": "Two or more modules share one bus address ({n}). Which one answers the poll?",
@@ -1437,6 +1506,20 @@ RULE_SHORT = {
     "family-gap": "объявлено у всех каналов, пишется у всех кроме одного",
     "param-channel-mismatch": "авария насоса 1 приходит на вход насоса 2",
     "self-enable": "стоит → нет разрешения → нет команды → стоит",
+    "timer-reset-by-own-condition": "пауза живёт один цикл задачи: вход таймера гасят ниже по ветви",
+    "timer-rearmed-by-own-branch": "выдержка выключения не кончается: вход таймера взводят заново ниже по ветви",
+    "timer-off-delay-in-own-branch": "TOF вызывают только там, где его вход поднят — отсчитывать нечем",
+    "fb-call-overwritten": "один экземпляр ФБ вызван дважды подряд с разными входами",
+    "edge-lost-in-own-branch": "ФБ вызывают лишь внутри ветви, требующей этот сигнал — остальные события теряются",
+    "fb-preset-missing": "PT у таймера или PV у счётчика не прописаны ни в вызове, ни в объявлении",
+    "always-false-condition": "`NOT X AND X` после подстановки: строка в журнале есть, защиты нет",
+    "signal-without-source": "блокировка читает сигнал, который навсегда остаётся в нуле",
+    "unsigned-vs-zero": "`cnt : UINT`, а в коде `IF cnt < 0` — ветвь никогда не исполняется",
+    "channel-sensor-off": "канал не оцифровывается, а ноль на улице выглядит правдоподобно (.export)",
+    "channel-output-off": "команда уходит в никуда, механизм стоит на месте (.export)",
+    "module-disabled": "все сигналы мертвы, программа живёт на старых значениях (.export)",
+    "visu-two-labels": "«насос 2» показывает насос 1: копия элемента с чужой привязкой (.export)",
+    "visu-index-mismatch": "«Котёл 3» рядом с alarm_kotel[2] — след копирования (.export)",
     "heating-ai-no-range-check": "обрыв Pt1000 приедет в регулятор как честные 0 °C (профиль)",
     "int-division": "<code>5/2</code> даст 2 — дробь отбрасывается",
     "real-to-time-mul": "дробная уставка времени теряется до конверсии",
@@ -1473,6 +1556,20 @@ RULE_SHORT = {
     "family-gap": "declared for all four boilers, written for three",
     "param-channel-mismatch": "pump 1's alarm arrives on pump 2's input",
     "self-enable": "stopped → no permission → no command → stopped",
+    "timer-reset-by-own-condition": "the pause lasts one task cycle — the timer input is dropped below",
+    "timer-rearmed-by-own-branch": "the equipment is never released: the TOF input is re-armed in the same branch",
+    "timer-off-delay-in-own-branch": "the TOF is only called while its input is up, so it never counts",
+    "fb-call-overwritten": "one instance is called twice in a row with different inputs",
+    "edge-lost-in-own-branch": "the FB with an edge input is only called while that input is up",
+    "fb-preset-missing": "the preset (PT on a timer, PV on a counter) is set nowhere",
+    "always-false-condition": "`NOT X AND X` after substitution: listed in the log, no protection",
+    "signal-without-source": "an interlock reads a flag that stays at zero forever",
+    "unsigned-vs-zero": "`cnt : UINT` with `IF cnt < 0` — a branch that can never run",
+    "channel-sensor-off": "the reading stays at zero, and zero outdoors looks plausible (.export)",
+    "channel-output-off": "the command goes nowhere and the actuator never moves (.export)",
+    "module-disabled": "every signal is dead while the program keeps stale values (.export)",
+    "visu-two-labels": "\"pump 2\" shows pump 1: an element copied with a foreign binding (.export)",
+    "visu-index-mismatch": "\"Boiler 3\" next to alarm_kotel[2] — a copy-paste trace (.export)",
     "heating-ai-no-range-check": "a broken Pt1000 reaches the controller as a solid 0 °C (profile)",
     "int-division": "<code>5/2</code> yields 2 — the fraction is dropped",
     "real-to-time-mul": "a fractional time setpoint is lost before conversion",
@@ -1533,6 +1630,20 @@ RULE_HELP = {
     "param-channel-mismatch": "В вызове функционального блока имя параметра говорит про один канал, а значение взято из другого: `bPump2_Fault := gvl.alarm_nasos_CO1`. Правило срабатывает только когда в этом же вызове нумерация каналов доказана — есть согласованные пары минимум для двух каналов. Последствие тихое и опасное: аварийный насос считается исправным и выбирается для работы, защита не срабатывает, а по журналу всё выглядит штатно.",
     "index-mismatch": "В группе однотипных строк отношение между позициями индексов держится почти везде, а в одной строке нарушено: одиннадцать строк пишут в свой канал, двенадцатая — в чужой. Так выглядит копипаст соседней ветки с неполной перенумерацией. Правило не сравнивает строки целиком: совпадение чисел из разных измерений (номер котла и номер блока аварий) — норма, и оно учтено. Признак эвристический: перед правкой посмотрите, не является ли эта строка осознанным исключением.",
     "self-enable": "Команда пуска получена из выхода функционального блока, который в том же скане вычисляется из своего входа, а на этот вход подана обратная связь того же оборудования: факт вращения насоса, положение задвижки, «агрегат работает». Получается замкнутый круг — оборудование стоит, значит разрешения нет, значит команды нет, значит оно продолжает стоять. Контур не запускается вообще, причём на стенде с прокрученным вручную приводом всё выглядит исправным. Ключевое слово — «в том же скане»: выход, который зависит от входа через память (счётчик пусков, таймер, триггер), в цепочке команды совершенно законен, и правило его не трогает.",
+    "timer-reset-by-own-condition": "Таймер считает по переменной, которую ниже в той же ветви гасят на всех путях. Скан N: вход TRUE, отсчёт пошёл, переменную сбросили. Скан N+1: вход уже FALSE, таймер обнулён вместе с накопленным временем, а условие, которое ждало выдержки, открыто. Пауза живёт один цикл задачи вместо уставки — на боевом объекте это 0,01 с при заданных 30 с. Код компилируется, читается как правильный, уставка есть на экране, оператор её крутит, и она ни на что не влияет. Правило смотрит дерево ветвей, а не соседство строк: сброс под условием (`IF T.Q THEN V := FALSE`) — это штатный одновыстрел, таймер успевает отсчитать выдержку, и такой код правило не трогает.",
+    "timer-rearmed-by-own-branch": "Зеркальный случай к предыдущему, и по последствиям он хуже. Задержка выключения (TOF) отсчитывает, пока вход держится FALSE: сняли команду — выдержка пошла — через уставку выход погас. Если ниже в той же ветви вход на всех путях снова взводят в TRUE, отсчёт каждый скан начинается заново, выход не гаснет никогда, и оборудование не останавливается: насос с выбегом крутится, продувка не кончается, вентилятор не выключается. У задержки включения дефект отнимает выдержку, здесь — отнимает само выключение. Правило различает тип таймера: для TON дефект — гашение входа, для TOF — его повторное взведение, а TP и BLINK не трогает вовсе, потому что у них вход работает как фронт и к выдержке отношения не имеет.",
+    "timer-off-delay-in-own-branch": "Задержка выключения отсчитывает время, пока вход СНЯТ: сняли команду — пошла выдержка — через уставку выход погас. Если таймер вызывают только внутри ветви, условие которой требует этот же вход, то в момент снятия команды ветвь не исполняется, вызова нет, и накопленное время стоит на нуле. Выдержка не кончается никогда, оборудование не выключается. Для задержки включения тот же код безупречен: она и должна считать, пока условие истинно, — поэтому правило смотрит только на TOF и TONOF. Найдено перебором сочетаний и проверено эмулятором скана: накопленное время осталось нулевым при всех опробованных поведениях входов.",
+    "fb-call-overwritten": "Экземпляр ФБ с памятью — таймер или детектор фронта — хранит одно состояние. Два вызова подряд в одной ветви с разными входами означают, что до таймера доходит только последний: первый вызов не успевает ни на что повлиять, хотя в коде выглядит рабочим. Вызовы во ВЗАИМОИСКЛЮЧАЮЩИХ ветвях — приём законный: в одной ветви таймер пускают, в другой сбрасывают через `IN := FALSE`. На нашем корпусе такой приём встретился семь раз, и правило его не трогает; оно срабатывает только когда оба вызова стоят на одном пути и исполняются в одном скане.",
+    "edge-lost-in-own-branch": "Вход по фронту — у R_TRIG, F_TRIG и у счётного входа CTU/CTUD — сравнивается с тем, что ФБ видел в прошлый свой вызов. Если его вызывают только внутри ветви, условие которой требует этот же вход, снятия входа он не застаёт: ветвь в этот момент не исполняется. Внутренняя память остаётся взведённой, и каждый следующий подъём фронтом уже не считается. Замер на эмуляторе скана: детектор дал одно срабатывание на десять переходов, счётчик CTU насчитал 1 при уставке 5. Коварство в том, что ПЕРВЫЙ фронт проходит нормально, поэтому при проверке на объекте «нажали — сработало» дефект не виден, он всплывает со второго раза.",
+    "fb-preset-missing": "Уставку таймера (PT) или счётчика (PV) можно задать тремя способами: аргументом вызова, присваиванием в поле `t.PT := …` или начальным значением в объявлении. Если её нет нигде, PT остаётся нулевым, и выход появляется в том же скане, в котором подняли вход. Код при этом выглядит правильным: вызов есть, выход читают, выдержки нет. От правила `timer-zero-pt` отличается тем, что там ноль написан явно, а здесь уставку просто забыли — и заметить это глазами труднее.",
+    "always-false-condition": "Условие, которое после подстановки присваиваний этого же скана оказывается тождественно ложным (или тождественно истинным). Классика: одна программа формирует команду от датчика, другая проверяет аварию «команда есть, а датчика нет» — и после подстановки выходит `NOT X AND X`, то есть FALSE при любом X. Авария физически не может сработать: строка в журнале есть, защиты нет. Глазами это не ловится, потому что присваивание и проверка лежат в разных POU, а между ними — порядок вызова из PLC_PRG. Правило подставляет только то, что в этом скане известно точно: присваивание должно покрывать все пути исполнения, а программа-источник — вызываться раньше. Если переменной присвоено в нескольких ветвях, подставляется каждое значение, и правило срабатывает лишь когда константа выходит при всех.",
+    "signal-without-source": "Булев сигнал состояния (авария, ошибка, неисправность) читается в условиях программы, но ни одна строка кода и ни один канал модуля его не записывают. Значит он навсегда остаётся в нуле: блокировка по аварии не сработает ни разу, лампа на мнемосхеме не загорится, в журнале останется мёртвая строка. На объекте такое выглядит как исправная защита — именно потому, что она не срабатывает. Типичная причина: сигнал ждали снаружи (его должны были завести электрики, или опрос по шине так и не дописали), а условие в коде уже стоит. Правило намеренно смотрит только на имена аварий и только на булевы: команды и уставки законно пишутся с экрана визуализации, а показания датчиков — прямо с канала, и в экспорте PLCopenXML ни того, ни другого не видно. Всё, что привязано к каналу в дереве устройств или упомянуто в графическом теле, правило не трогает.",
+    "unsigned-vs-zero": "Беззнаковая переменная (UINT, UDINT, WORD, BYTE и подобные) сравнивается с нулём так, что ответ известен заранее: `x < 0` не бывает истинным, `x >= 0` не бывает ложным. Компилятор на это не жалуется, ветвь компилируется и никогда не исполняется. Чаще всего это не стиль, а след неверно выбранного типа: защиту от отрицательного значения написали осознанно, а тип её молча отменил — и там, где ожидался зажим в ноль, остаётся переполнение по кругу (0 − 1 у UINT даёт 65535). Отдельно опасен вариант `x >= 0` в условии аварии: оно выполняется всегда, и авария висит постоянно либо, наоборот, маскирует настоящую.",
+    "channel-sensor-off": "Канал модуля заведён на переменную IEC, но тип датчика на нём не выбран («Отключен»). Канал не оцифровывается: переменная остаётся нулём при любом сигнале на входе. Беда в том, что ноль правдоподобен — для наружной температуры это «на улице 0 °C», и погодозависимый график сразу считает не ту уставку, а наладчик ищет ошибку в коде. В ST этого не видно вообще: там переменная объявлена и читается как обычно, настройка живёт в «Параметрах устройства». Свободных входов у модуля обычно больше, чем занятых, и для них «Отключен» — правильная настройка, поэтому правило смотрит только на каналы, чьё ЗНАЧЕНИЕ заведено на переменную (код статуса вешают и на свободные входы, по нему все входы выглядели бы занятыми).",
+    "channel-output-off": "Выход модуля привязан к переменной, но тип выходного сигнала не выбран. Программа пишет в переменную, значение доходит до канала и там останавливается: ЦАП не формирует ни 4…20 мА, ни 0…10 В. Снаружи это выглядит как неисправный исполнительный механизм — клапан не двигается, привод не реагирует, а в программе всё правильно.",
+    "module-disabled": "У модуля стоит признак «исключить из опроса». Контроллер его не опрашивает совсем: входы не обновляются, выходы не выставляются, все связанные переменные остаются с теми значениями, что были на момент отключения. Признак обычно ставят на наладке, чтобы убрать ошибку по отсутствующему модулю, и забывают снять — тогда целый шкаф сигналов тихо мёртв, а программа работает со старыми значениями и не жалуется.",
+    "visu-two-labels": "Одна и та же переменная выведена на экране рядом с разными подписями. Почти всегда это копия элемента: нарисовали «Насос 1», скопировали рядом, поправили подпись и забыли привязку. Оператор видит два прибора, а показывают они один — и на объекте это обнаруживается в момент, когда по показаниям принимают решение. Подписи сравниваются по смыслу: формат вывода (`%d`, `%.1f`) из них вырезается, лишние пробелы не считаются различием.",
+    "visu-index-mismatch": "Номер в подписи элемента не совпадает с индексом в привязанной переменной: подпись «Котёл 3», а переменная `alarm_kotel[2]`. След того же копирования, только здесь ошибка видна прямо в паре «подпись ↔ привязка». Цифры формата вывода из подписи вырезаются до сравнения: на боевом проекте `%2.0f Гц` рядом с `act_FH1` давало ложные срабатывания — 2 и 0 это ширина и точность, а не номер оборудования.",
     "plcopen-naming": "Стандарт PLCopen: имя переменной начинается с префикса по типу (BOOL→x, INT→i, REAL→r, DINT→di, TIME→t, WORD→w …). Опциональная проверка соответствия стандарту.",
     "naming": "Односимвольные имена (кроме счётчиков i/j/k/n) нечитаемы при сопровождении. I/O-теги и пины FB не трогаем.",
     "magic-number": "Крупная/дробная сырая константа без имени — при правке уставки легко пропустить и трудно понять смысл. Вынесите в VAR CONSTANT. Индексы массивов, границы FOR и мелкие целые (<16) не считаются; одинаковые константы объединены по значению.",
@@ -1569,6 +1680,20 @@ RULE_HELP = {
     "param-channel-mismatch": "In a function block call the parameter name refers to one channel while the value comes from another: `bPump2_Fault := gvl.alarm_nasos_CO1`. The rule fires only when channel numbering is proven within the same call — consistent pairs exist for at least two channels. The consequence is quiet and dangerous: a faulty pump is treated as healthy and picked for duty, the interlock never fires, and the log looks perfectly normal.",
     "index-mismatch": "Across a group of similar lines the relation between index positions holds nearly everywhere but is broken in one line: eleven lines write to their own channel, the twelfth writes to someone else's. That is what a copied neighbouring branch with partial renumbering looks like. The rule does not compare whole lines: numbers from different dimensions (boiler number and alarm block number) coincide routinely, and that case is accounted for. This is a heuristic — before changing anything, check whether the line is a deliberate exception.",
     "self-enable": "A start command is derived from a function block output that is computed from its own input within the same scan, while that input is fed with the equipment's own feedback: pump rotation, valve position, “unit running”. The result is a deadlock — the equipment is stopped, so there is no permission, so there is no command, so it stays stopped. The loop never starts, and on a bench with the drive spun by hand everything looks fine. The phrase “within the same scan” is what matters: an output that depends on the input through memory (a start counter, a timer, an edge trigger) is perfectly legitimate in the command chain, and the rule leaves it alone.",
+    "timer-reset-by-own-condition": "A timer counts on a variable that is cleared on every path further down the same branch. Scan N: the input is TRUE, counting starts, the variable is dropped. Scan N+1: the input is already FALSE, the timer is reset together with the accumulated time, and the condition that was waiting for the delay is open. The pause lasts one task cycle instead of the setpoint — on a live site that was 0.01 s against the 30 s configured. The code compiles, reads as correct, the setpoint is on the screen, the operator adjusts it, and it changes nothing. The rule looks at the branch tree, not at adjacent lines: a reset under a condition (`IF T.Q THEN V := FALSE`) is the normal one-shot pattern, the timer does complete its delay, and such code is left alone.",
+    "timer-rearmed-by-own-branch": "The mirror case of the previous rule, and worse in its consequences. An off-delay (TOF) counts while its input stays FALSE: drop the command, the delay runs, the output goes off after the setpoint. If the input is re-armed to TRUE on every path further down the same branch, the count restarts every scan, the output never goes off, and the equipment never stops: the pump keeps coasting, the purge never ends, the fan stays on. An on-delay defect takes the delay away; this one takes the shutdown away. The rule tells the types apart: for TON the defect is clearing the input, for TOF re-arming it, and TP and BLINK are left alone entirely, because there the input acts as an edge and has nothing to do with the delay.",
+    "timer-off-delay-in-own-branch": "An off-delay counts while its input is DOWN: drop the command, the delay runs, the output goes off after the setpoint. If the timer is only called inside a branch whose condition requires that same input, then at the moment the command is dropped the branch does not execute, there is no call, and the accumulated time stays at zero. The delay never ends and the equipment never stops. For an on-delay the same code is correct — it is meant to count while the condition holds — so the rule looks only at TOF and TONOF. Found by enumerating combinations and confirmed with a scan emulator: the accumulated time stayed at zero under every input behaviour tried.",
+    "fb-call-overwritten": "A stateful FB instance — a timer or an edge detector — holds a single state. Two calls in a row within the same branch with different inputs mean only the last one reaches the timer: the first call cannot affect anything, although it looks live in the code. Calls in MUTUALLY EXCLUSIVE branches are a legitimate pattern — start the timer in one branch, reset it via `IN := FALSE` in the other. That pattern occurs seven times in our corpus and the rule leaves it alone; it only fires when both calls sit on the same path and run in the same scan.",
+    "edge-lost-in-own-branch": "An edge input — on R_TRIG, F_TRIG and on the counting input of CTU/CTUD — is compared with what the FB saw at its previous call. If it is only called inside a branch whose condition requires that same input, it never witnesses the input going down: at that moment the branch does not execute. Its internal memory stays latched, and every later rise no longer counts as an edge. Measured on a scan emulator: a detector produced one pulse out of ten transitions, and a CTU counted 1 against a preset of 5. The trap is that the FIRST edge works normally, so a quick check on site — press it, it fires — shows nothing; the defect appears from the second time on.",
+    "fb-preset-missing": "A preset — PT on a timer, PV on a counter — can be set in three ways: as a call argument, by assigning the field `t.PT := …`, or as an initial value in the declaration. If it is set nowhere, PT stays at zero and the output appears in the same scan in which the input went up. The code looks right: the call is there, the output is read, the delay is not. It differs from `timer-zero-pt` in that there the zero is written explicitly, while here the preset is simply missing — which is harder to spot by eye.",
+    "always-false-condition": "A condition that becomes identically false (or identically true) once same-scan assignments are substituted. The classic shape: one program derives a command from a sensor, another checks the alarm “command present but sensor absent” — substitution turns it into `NOT X AND X`, i.e. FALSE for any X. The alarm physically cannot fire: it is listed in the log, but there is no protection. The eye does not catch it because the assignment and the check live in different POUs, with the PLC_PRG call order between them. The rule substitutes only what is known for certain within the scan: the assignment must cover every execution path, and the source program must be called earlier. If a variable is assigned in several branches, every value is substituted and the rule fires only when the result is constant for all of them.",
+    "signal-without-source": "A boolean state signal (alarm, error, fault) is read in the program's conditions, but no line of code and no module channel ever writes it. It therefore stays at zero forever: the alarm interlock never trips, the lamp on the screen never lights, the log keeps a dead entry. On site this looks like a healthy protection precisely because it never fires. The usual cause: the signal was expected from outside — the wiring was to be delivered by someone else, or the fieldbus polling was never finished — while the condition is already in the code. The rule deliberately looks only at alarm-style names and only at booleans: commands and setpoints are legitimately written from the visualisation, and sensor values come straight from a channel, and a PLCopenXML export shows neither. Anything bound to a channel in the device tree or mentioned in a graphical body is left alone.",
+    "unsigned-vs-zero": "An unsigned variable (UINT, UDINT, WORD, BYTE and the like) is compared against zero in a way whose answer is known in advance: `x < 0` is never true, `x >= 0` is never false. The compiler does not complain, the branch compiles and never runs. Usually this is not a style issue but the trace of a wrongly chosen type: the guard against a negative value was written deliberately and the type silently cancelled it — and where a clamp to zero was expected, the value wraps around instead (0 − 1 on a UINT gives 65535). The `x >= 0` form is particularly nasty inside an alarm condition: it always holds, so the alarm either stays on permanently or masks the real one.",
+    "channel-sensor-off": "A module channel is wired to an IEC variable, but no sensor type is selected on it. The channel is not digitised: the variable stays at zero whatever the input. The trouble is that zero is plausible — for an outdoor sensor it reads as \"0 °C outside\", the weather-compensated curve immediately computes the wrong setpoint, and the commissioning engineer goes looking for the bug in the code. None of this is visible in ST, where the variable is declared and read as usual; the setting lives in the device parameters. A module usually has more free inputs than wired ones, and for those \"off\" is the correct setting, so the rule only looks at channels whose VALUE is bound to a variable (a status code is bound on free inputs too, and by that measure every input would look wired).",
+    "channel-output-off": "A module output is bound to a variable, but no output signal type is selected. The program writes to the variable, the value reaches the channel and stops there: the DAC produces neither 4…20 mA nor 0…10 V. From the outside it looks like a faulty actuator — the valve does not move, the drive does not respond — while the program is correct.",
+    "module-disabled": "The module carries the \"exclude from polling\" flag. The controller does not poll it at all: inputs are not refreshed, outputs are not driven, and every linked variable keeps the value it had when polling stopped. The flag is usually set during commissioning to silence a missing-module error and then never cleared — a whole cabinet of signals is quietly dead while the program works with stale values and never complains.",
+    "visu-two-labels": "The same variable is displayed on a screen next to different captions. This is almost always a copied element: \"Pump 1\" was drawn, duplicated next to it, the caption was fixed and the binding was not. The operator sees two instruments that in fact show one, and on site this surfaces exactly when a decision is made from the reading. Captions are compared by meaning: output formats (`%d`, `%.1f`) are stripped and extra whitespace is not treated as a difference.",
+    "visu-index-mismatch": "The number in an element's caption does not match the index in the bound variable: the caption says \"Boiler 3\" while the variable is `alarm_kotel[2]`. It is the same copy-paste trace, except here the error is visible right in the caption-to-binding pair. Format digits are stripped from the caption before comparing: on a live project `%2.0f Гц` next to `act_FH1` produced false positives — 2 and 0 are width and precision, not an equipment number.",
     "plcopen-naming": "PLCopen standard: a variable name starts with a type prefix (BOOL→x, INT→i, REAL→r, DINT→di, TIME→t, WORD→w …). An optional conformance check.",
     "naming": "Single-character names (other than counters i/j/k/n) are unreadable during maintenance. I/O tags and FB pins are left alone.",
     "magic-number": "A large/fractional raw constant without a name — easy to miss when changing a setpoint and hard to understand. Move it to a VAR CONSTANT. Array indices, FOR bounds and small integers (<16) don't count; equal constants are grouped by value.",
@@ -1664,6 +1789,64 @@ RULE_FIX = {
     "self-enable": [
         "Заведите в команду выход СОСТОЯНИЯ, а не разрешающий выход, содержащий сам вход: `NOT bProtBlocked1` вместо `bStartAllow`. Защита при этом продолжает работать — блокировка по числу пусков никуда не девается.",
         "Проверьте, что подано на вход блока: команда на пуск и факт вращения — разные сигналы, и подмена одного другим ловится только на объекте.",
+    ],
+    "timer-reset-by-own-condition": [
+        "Берите вход таймера СНАРУЖИ той ветви, которую таймер открывает: `pause(IN := run_both, PT := …); run_2 := pause.Q;`. Тогда ветвь физически не может погасить собственный отсчёт, и дефект нельзя выразить даже случайно — обычно при этом весь IF оказывается не нужен.",
+        "Если внешнего сигнала нет, разведите «что отсчитываем» и «что гасим»: завести таймер отдельным флагом удержания (`switching`), который ставится при входе в переключение и снимается по `T.Q`, а условие отсчёта подавать от этого флага.",
+        "Проверьте уставку на объекте замером, а не чтением кода: такая пауза отрабатывает один цикл задачи, и на экране это выглядит как мгновенное переключение при любой уставке.",
+    ],
+    "timer-rearmed-by-own-branch": [
+        "Снимайте команду один раз и не выставляйте её обратно в той же ветви: выдержка выключения отсчитывается, только пока вход держится снятым.",
+        "Проверьте на объекте не пуск, а останов: дефект виден лишь в момент выключения, и выглядит как «оборудование не слушается команды стоп».",
+    ],
+    "timer-off-delay-in-own-branch": [
+        "Вызывайте таймер безусловно, а условие подавайте на его вход: `t(IN := v, PT := …);` вне ветви, а ветвь оставьте для действий.",
+        "Проверяйте на объекте останов, а не пуск: пуск в таком коде отрабатывает правильно, и дефект виден только в момент выключения.",
+    ],
+    "fb-call-overwritten": [
+        "Оставьте один вызов, а выбор входа сделайте выражением: `t(IN := a AND NOT b, PT := …);`.",
+        "Если нужен сброс, разведите вызовы по взаимоисключающим ветвям — тогда в скане исполнится ровно один.",
+    ],
+    "edge-lost-in-own-branch": [
+        "Вызывайте ФБ безусловно, а условие подавайте на вход: `r(CLK := v);` вне ветви, внутри ветви оставьте только действия по `r.Q`.",
+        "Проверяйте на объекте дважды подряд: первое срабатывание проходит всегда, дефект виден со второго.",
+    ],
+    "fb-preset-missing": [
+        "Задайте уставку в вызове: `t(IN := v, PT := T#5S);` — так она видна рядом с условием отсчёта.",
+        "Если уставка приходит с экрана, присвойте её полю перед вызовом и проверьте, что переменная не остаётся нулевой при первом запуске.",
+    ],
+    "always-false-condition": [
+        "Берите команду не от того же сигнала, который проверяете: авария «команда есть, датчика нет» работает только когда в команде этого датчика нет сомножителем.",
+        "Проверьте и промежуточную переменную, а не только итоговое выражение: правка в одну строку вернула этот же дефект в то же место во второй раз.",
+    ],
+    "signal-without-source": [
+        "Проверьте, откуда сигнал должен приходить: если его заводят электрики или опрос по шине — привяжите переменную к каналу, и правило замолчит.",
+        "Если источника не будет, уберите условие вместе с переменной: мёртвая блокировка опаснее отсутствующей, потому что на неё рассчитывают.",
+    ],
+    "unsigned-vs-zero": [
+        "Если отрицательное значение возможно — поменяйте тип на знаковый (INT/DINT/REAL): защита начнёт работать так, как задумана.",
+        "Если отрицательного быть не может — уберите мёртвую ветвь: она создаёт ложное чувство защиты у того, кто будет читать код после вас.",
+        "Проверьте арифметику выше по коду: у беззнакового `0 - 1` даёт максимум диапазона, и зажим в ноль как раз от этого и не спасает.",
+    ],
+    "channel-sensor-off": [
+        "Выберите тип датчика на канале в «Параметрах устройства» — тот, что физически подключён (ТСП100, ТСП1000, 4…20 мА).",
+        "Если вход действительно не используется — снимите привязку переменной к каналу, тогда «Отключен» станет честной настройкой и правило замолчит.",
+    ],
+    "channel-output-off": [
+        "Задайте тип выходного сигнала на канале (4…20 мА или 0…10 В) — по тому, что принимает исполнительный механизм.",
+        "Если выход не используется — уберите привязку переменной, чтобы в проекте не оставалось команды, уходящей в никуда.",
+    ],
+    "module-disabled": [
+        "Снимите признак исключения модуля из опроса, если шкаф собран и модуль на месте.",
+        "Если модуля физически нет — удалите его из дерева устройств вместе с привязками: отключённый, но описанный модуль оставляет в программе переменные, которые никто не обновляет.",
+    ],
+    "visu-two-labels": [
+        "Сверьте привязку с подписью на обоих элементах: у скопированного обычно осталась переменная соседа.",
+        "Для однотипных приборов удобнее один шаблон визуализации с параметром-переменной: тогда копировать нечего и привязка не разъедется.",
+    ],
+    "visu-index-mismatch": [
+        "Поправьте то, что неверно: либо индекс в привязке, либо номер в подписи — на объекте оператор верит подписи.",
+        "Если номер в подписи относится не к индексу массива, а к чему-то ещё (позиция по схеме), допишите это в подписи, чтобы расхождение не выглядело ошибкой.",
     ],
     "plcopen-naming": [
         "Переименуйте по таблице префиксов: `value : REAL` → `rValue`, `cnt : INT` → `iCnt`.",
@@ -1793,6 +1976,64 @@ RULE_FIX = {
     "self-enable": [
         "Feed the STATE output into the command instead of a permission output that contains the input itself: `NOT bProtBlocked1` rather than `bStartAllow`. The protection keeps working — the start-count lockout is unaffected.",
         "Check what is wired to the block input: the start command and the running feedback are different signals, and swapping one for the other only shows up on site.",
+    ],
+    "timer-reset-by-own-condition": [
+        "Take the timer input from OUTSIDE the branch the timer gates: `pause(IN := run_both, PT := …); run_2 := pause.Q;`. The branch then cannot clear the timer's own count even by accident — and usually the whole IF turns out to be unnecessary.",
+        "If there is no external signal, separate “what we time” from “what we clear”: arm the timer from a dedicated hold flag (`switching`) that is set when the switchover starts and cleared on `T.Q`, and feed the run condition from that flag.",
+        "Verify the delay on site by measurement, not by reading the code: a pause like this expires in one task cycle, and on the screen it looks like an instant switchover at any setpoint.",
+    ],
+    "timer-rearmed-by-own-branch": [
+        "Drop the command once and do not re-assert it in the same branch: an off-delay only counts while its input stays dropped.",
+        "Test the stop, not the start: the defect only shows at shutdown, and on site it looks like equipment ignoring the stop command.",
+    ],
+    "timer-off-delay-in-own-branch": [
+        "Call the timer unconditionally and pass the condition to its input: put `t(IN := v, PT := …);` outside the branch and keep the branch for the actions.",
+        "Test the stop, not the start: starting works correctly in this code, and the defect only shows at shutdown.",
+    ],
+    "fb-call-overwritten": [
+        "Keep a single call and make the input an expression: `t(IN := a AND NOT b, PT := …);`.",
+        "If a reset is needed, put the calls in mutually exclusive branches so exactly one runs per scan.",
+    ],
+    "edge-lost-in-own-branch": [
+        "Call the FB unconditionally and pass the condition to its input: `r(CLK := v);` outside the branch, and keep only the actions on `r.Q` inside.",
+        "Test it twice in a row on site: the first pulse always works, the defect shows from the second.",
+    ],
+    "fb-preset-missing": [
+        "Set the preset in the call: `t(IN := v, PT := T#5S);` so it is visible next to the run condition.",
+        "If the preset comes from the HMI, assign the field before the call and make sure the variable is not left at zero on first start.",
+    ],
+    "always-false-condition": [
+        "Take the command from a source other than the signal being checked: the alarm “command present, sensor absent” only works when the command does not contain that sensor as a factor.",
+        "Check the intermediate variable as well, not just the final expression: the same defect came back a second time in the same place through a one-line edit of the source.",
+    ],
+    "signal-without-source": [
+        "Check where the signal is supposed to come from: if it is field wiring or fieldbus polling, bind the variable to its channel and the rule goes quiet.",
+        "If there will be no source, drop the condition together with the variable: a dead interlock is more dangerous than a missing one, because people rely on it.",
+    ],
+    "unsigned-vs-zero": [
+        "If a negative value is possible, switch the type to a signed one (INT/DINT/REAL) — the guard will then do what it was meant to do.",
+        "If a negative value is impossible, drop the dead branch: it gives a false sense of protection to whoever reads the code after you.",
+        "Check the arithmetic above it: on an unsigned type `0 - 1` yields the top of the range, which is exactly what a clamp to zero fails to catch.",
+    ],
+    "channel-sensor-off": [
+        "Select the sensor type for the channel in the device parameters — the one physically connected (Pt100, Pt1000, 4…20 mA).",
+        "If the input really is unused, remove the variable binding from the channel: \"off\" then becomes an honest setting and the rule goes quiet.",
+    ],
+    "channel-output-off": [
+        "Set the output signal type on the channel (4…20 mA or 0…10 V) to match what the actuator accepts.",
+        "If the output is unused, drop the variable binding so the project does not keep a command that goes nowhere.",
+    ],
+    "module-disabled": [
+        "Clear the \"exclude from polling\" flag if the cabinet is assembled and the module is in place.",
+        "If the module is physically absent, delete it from the device tree together with its bindings: a described but disabled module leaves variables in the program that nobody refreshes.",
+    ],
+    "visu-two-labels": [
+        "Check the binding against the caption on both elements: the copied one usually kept its neighbour's variable.",
+        "For identical instruments a single visualisation template with a variable parameter is easier: there is nothing to copy and no binding to drift.",
+    ],
+    "visu-index-mismatch": [
+        "Fix whichever is wrong — the index in the binding or the number in the caption. On site the operator trusts the caption.",
+        "If the caption number refers to something other than the array index (a position on the diagram, say), spell that out in the caption so the mismatch does not read as an error.",
     ],
     "plcopen-naming": [
         "Rename by the prefix table: `value : REAL` → `rValue`, `cnt : INT` → `iCnt`.",
@@ -1953,6 +2194,20 @@ RULE_TITLE = {
     "param-channel-mismatch": "Параметр канала получает чужой канал",
     "index-mismatch": "Строка расставляет индексы иначе, чем группа",
     "self-enable": "Команда зависит от собственной обратной связи",
+    "timer-reset-by-own-condition": "Таймер гасит собственное условие отсчёта",
+    "timer-rearmed-by-own-branch": "Задержка выключения не истекает никогда",
+    "timer-off-delay-in-own-branch": "Выдержку выключения не вызывают, когда она должна считать",
+    "fb-call-overwritten": "Второй вызов экземпляра перетирает первый",
+    "edge-lost-in-own-branch": "Вход по фронту не видит снятия — считается только первое событие",
+    "fb-preset-missing": "У экземпляра нигде не задана уставка",
+    "always-false-condition": "Условие не выполнится ни при каких значениях",
+    "signal-without-source": "Аварию никто не формирует",
+    "unsigned-vs-zero": "Беззнаковое сравнивается с нулём",
+    "channel-sensor-off": "У занятого канала снят тип датчика",
+    "channel-output-off": "Выход модуля не настроен",
+    "module-disabled": "Модуль исключён из опроса",
+    "visu-two-labels": "Одна переменная под двумя подписями",
+    "visu-index-mismatch": "Номер в подписи не равен индексу",
     "plcopen-naming": "Имя не по стандарту PLCopen",
     "cfc-div-zero": "CFC: деление на литеральный ноль",
 },
@@ -1989,6 +2244,20 @@ RULE_TITLE = {
     "param-channel-mismatch": "Channel parameter fed from another channel",
     "index-mismatch": "Line indexes differently from its group",
     "self-enable": "Command depends on its own feedback",
+    "timer-reset-by-own-condition": "Timer cleared by its own run condition",
+    "timer-rearmed-by-own-branch": "Off-delay never expires",
+    "timer-off-delay-in-own-branch": "Off-delay is not called when it should be counting",
+    "fb-call-overwritten": "A second call to the instance overwrites the first",
+    "edge-lost-in-own-branch": "An edge-sensitive input never sees the drop — only the first event counts",
+    "fb-preset-missing": "The instance has no preset anywhere",
+    "always-false-condition": "Condition can never be true",
+    "signal-without-source": "Nothing ever raises this alarm",
+    "unsigned-vs-zero": "Unsigned compared against zero",
+    "channel-sensor-off": "Sensor type cleared on a wired channel",
+    "channel-output-off": "Module output left unconfigured",
+    "module-disabled": "Module excluded from polling",
+    "visu-two-labels": "One variable under two captions",
+    "visu-index-mismatch": "Caption number differs from the index",
     "plcopen-naming": "Name off the PLCopen standard",
     "cfc-div-zero": "CFC: division by a literal zero",
 },
@@ -2029,6 +2298,22 @@ DETAIL = {
     "param-channel-mismatch": "канал {ch} получает значение канала {other}: в вызове `{fb}` имя параметра говорит про канал {ch}, а сигнал взят из {other}",
     "index-mismatch": "позиция {p1} и позиция {p2} совпадают в {eq} строках группы из {total}, а здесь различаются ({v1} против {v2}) — похоже, строку скопировали и перенумеровали не полностью",
     "self-enable": "разрешение на пуск `{cmd}` получено из `{fb}.{out}`, который в том же скане равен функции входа `{inp}`, а на этот вход подана обратная связь `{sig}` того же канала — команда не появится, пока оборудование не работает, а работать оно не начнёт без команды",
+    "timer-reset-by-own-condition": "таймер `{timer}` отсчитывает по `{var}`, а `{var}` гасится в строке {rl} на всех путях этой же ветви — на следующем скане вход уже FALSE, накопленное время обнулено, и выдержка живёт один цикл задачи вместо уставки",
+    "timer-reset.reduced": ". При положительной уставке выход `{timer}.Q` тождественно ложен, поэтому условие `{cond}` равносильно `{to}` — таймер в этом коде ни на что не влияет",
+    "timer-rearmed-by-own-branch": "таймер `{timer}` отсчитывает задержку выключения по `{var}`, а `{var}` снова взводится в строке {rl} на всех путях этой же ветви — отсчёт начинается заново на каждом скане, выдержка не истекает никогда, и команда с выхода не снимается",
+    "timer-off-delay-in-own-branch": "таймер `{timer}` — задержка выключения, но все его вызовы лежат внутри ветви, требующей `{var}`: когда `{var}` снимут, вызова не будет, и выдержка не начнёт отсчитываться",
+    "fb-call-overwritten": "экземпляр `{timer}` вызван дважды подряд: в строке {fl} со входом `{first}`, затем со входом `{second}` — до таймера дойдёт только второй, первый вызов не делает ничего",
+    "edge-lost-in-own-branch": "экземпляр `{edge}` ({type}) со входом по фронту вызывается только внутри ветви, требующей `{var}`: снятия входа он не видит, память остаётся взведённой, и все фронты после первого теряются",
+    "fb-preset-missing": "у экземпляра `{timer}` типа {type} уставка не задана ни в вызове, ни присваиванием в поле, ни в объявлении — PT остаётся нулевым, и выход появится в том же скане, что и вход",
+    "always-false-condition": "{what} всегда {val}, если подставить значения этого же скана: {steps}",
+    "signal-without-source": "`{var}` читается в условиях ({readers}), но ни одна строка кода и ни один канал модуля его не записывают — сигнал навсегда остаётся в нуле, и защита по нему не срабатывает ни разу",
+    "unsigned-vs-zero": "`{var} : {type}` — тип беззнаковый, поэтому сравнение с нулём всегда {val}, и ветвь не исполняется ни при каких значениях",
+    "signal-without-source.confirmed": "`{var}` читается ({readers}), но его не записывает ни одна строка кода, ни один канал модуля и ни один элемент экрана — источника нет вообще, сигнал навсегда остаётся в нуле, и защита по нему не срабатывает ни разу",
+    "channel-sensor-off": "у модуля `{dev}` канал заведён на переменную, но тип датчика не выбран («Отключен»): `{par}` — канал не оцифровывается, переменная остаётся нулём, а для наружной температуры ноль выглядит правдоподобно",
+    "channel-output-off": "у модуля `{dev}` выход привязан к переменной, но тип выходного сигнала не выбран: `{par}` — команда уходит в никуда, исполнительный механизм не двигается",
+    "module-disabled": "модуль `{dev}` исключён из опроса (`{par}` = TRUE) — все его входы и выходы мертвы, программа работает со старыми значениями",
+    "visu-two-labels": "на экране `{screen}` переменная `{var}` выведена под разными подписями: {extra} — похоже, элемент скопировали и не поправили привязку",
+    "visu-index-mismatch": "на экране `{screen}` подпись «{extra}» стоит рядом с `{var}` — номер в подписи не совпадает с индексом переменной",
     "plcopen-naming": "{n} имён не по PLCopen: {ex}{more}",
     "cfc-div-zero": "делитель блока {op} подключён к литеральному 0 → гарантированное деление на ноль",
 },
@@ -2065,6 +2350,22 @@ DETAIL = {
     "param-channel-mismatch": "channel {ch} is fed from channel {other}: in call `{fb}` the parameter name says channel {ch}, but the signal comes from {other}",
     "index-mismatch": "positions {p1} and {p2} match in {eq} of {total} lines in this group but differ here ({v1} vs {v2}) — the line was likely copied and renumbered only partially",
     "self-enable": "the start permission `{cmd}` comes from `{fb}.{out}`, which within the same scan is a function of input `{inp}`, and that input is fed with the feedback `{sig}` of the same channel — the command never appears until the equipment runs, and it cannot start running without the command",
+    "timer-reset-by-own-condition": "timer `{timer}` runs on `{var}`, and `{var}` is cleared at line {rl} on every path of the same branch — on the next scan the input is already FALSE, the accumulated time is gone, and the delay lasts one task cycle instead of the setpoint",
+    "timer-reset.reduced": ". With a positive preset the output `{timer}.Q` is identically false, so the condition `{cond}` is equivalent to `{to}` — the timer affects nothing here",
+    "timer-rearmed-by-own-branch": "timer `{timer}` runs an off-delay on `{var}`, and `{var}` is re-armed at line {rl} on every path of the same branch — the count restarts every scan, the delay never expires, and the output is never released",
+    "timer-off-delay-in-own-branch": "timer `{timer}` is an off-delay, yet every call to it sits inside a branch that requires `{var}`: once `{var}` is dropped there is no call at all, so the delay never starts counting",
+    "fb-call-overwritten": "instance `{timer}` is called twice in a row: at line {fl} with input `{first}`, then with input `{second}` — only the second one reaches the timer, the first call does nothing",
+    "edge-lost-in-own-branch": "instance `{edge}` ({type}) has an edge input and is only called inside a branch that requires `{var}`: it never sees the input go down, its memory stays latched, and every edge after the first is lost",
+    "fb-preset-missing": "instance `{timer}` of type {type} has no preset in the call, no field assignment and no initial value — PT stays at zero, so the output appears in the same scan as the input",
+    "always-false-condition": "{what} is always {val} once same-scan values are substituted: {steps}",
+    "signal-without-source": "`{var}` is read in conditions ({readers}), but no line of code and no module channel ever writes it — the signal stays at zero forever and the protection never fires",
+    "unsigned-vs-zero": "`{var} : {type}` is unsigned, so the comparison against zero is always {val} and the branch never runs",
+    "signal-without-source.confirmed": "`{var}` is read ({readers}), but nothing writes it — no line of code, no module channel and no screen element. There is no source at all: the signal stays at zero forever and the protection never fires",
+    "channel-sensor-off": "on module `{dev}` the channel is wired to a variable, but no sensor type is selected (\"off\"): `{par}` — the channel is not digitised and the variable stays at zero, which for an outdoor temperature looks plausible",
+    "channel-output-off": "on module `{dev}` the output is bound to a variable, but no output signal type is selected: `{par}` — the command goes nowhere and the actuator does not move",
+    "module-disabled": "module `{dev}` is excluded from polling (`{par}` = TRUE) — all of its inputs and outputs are dead and the program keeps working with stale values",
+    "visu-two-labels": "on screen `{screen}` the variable `{var}` is displayed under different captions: {extra} — the element was most likely copied without fixing its binding",
+    "visu-index-mismatch": "on screen `{screen}` the caption \"{extra}\" sits next to `{var}` — the number in the caption does not match the variable index",
     "plcopen-naming": "{n} names off PLCopen: {ex}{more}",
     "cfc-div-zero": "the divisor of the {op} block is wired to a literal 0 → a guaranteed division by zero",
 },
@@ -2090,6 +2391,10 @@ TERM = {
     "chk.array-bounds": "границы массивов", "chk.div-zero": "деление на ноль",
     "chk.range": "выход за диапазон", "chk.pointer": "разыменование указателя",
     "and_more": "и ещё {k}",
+    "scope.units": "объектов {n}",
+    "af.cond": "условие", "af.in": "вход таймера",
+    "af.assign": "правая часть присваивания",
+    "af.false": "ЛОЖНО", "af.true": "ИСТИННО", "af.at_line": ", строка {n}",
 },
 "en": {
     "cat.controller": "Controller", "cat.io": "I/O module",
@@ -2109,6 +2414,10 @@ TERM = {
     "chk.array-bounds": "array bounds", "chk.div-zero": "division by zero",
     "chk.range": "range overflow", "chk.pointer": "pointer dereference",
     "and_more": "and {k} more",
+    "scope.units": "{n} objects",
+    "af.cond": "the condition", "af.in": "the timer input",
+    "af.assign": "the right-hand side",
+    "af.false": "FALSE", "af.true": "TRUE", "af.at_line": ", line {n}",
 },
 }
 

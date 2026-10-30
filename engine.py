@@ -551,8 +551,10 @@ def task_pou_instances(root):
     return names
 
 
-def dead_pous(root, pous):
-    bodies = "\n".join(d.get("fulltext", d["body"]) for d in pous.values())
+def dead_pous(root, pous, extra=""):
+    """extra — имена ВНЕ программ (привязки экранов, параметры преобразований): кнопка
+    на экране умеет вызывать программу, и без этого она числилась бы мёртвой."""
+    bodies = "\n".join(d.get("fulltext", d["body"]) for d in pous.values()) + "\n" + (extra or "")
     decls = []
     for pou in root.iter(q("pou")):
         for v in pou.iter(q("variable")):
@@ -774,7 +776,7 @@ def _families(text):
     return fam
 
 
-def heur_family_gap(pous, root):
+def heur_family_gap(pous, root, extra=""):
     """Поле есть у всех каналов семейства, кроме ровно одного, — и там оно объявлено.
 
     Опора на объявления обязательна: разный состав полей у каналов — норма (разное
@@ -782,7 +784,10 @@ def heur_family_gap(pous, root):
     у всех кроме одного» — уже сильный сигнал, что блок скопировали и не дописали.
     """
     per_pou = {}          # (base, idx, suf) → POU, где поле реально используется
-    all_text = []
+    # extra — использования вне программ. На боевом проекте без этого правило дало ложное
+    # «у канала 2 поле не заполняется»: весь погодный график собран объектами
+    # «Преобразование единиц», и в ST его уставок нет ни одной строкой.
+    all_text = [extra or ""]
     for name, d in pous.items():
         text = strip_comments(d.get("fulltext") or d["body"])
         all_text.append(text)
@@ -1048,6 +1053,1037 @@ def polarity_signal(pous):
     return {"polarity_perepad_tags": total,
             # 0 — соглашение одно на проект; >0 — в проекте два соглашения сразу
             "polarity_perepad_minority_pct": round(100 * minority / total) if total else 0}
+
+
+# ---------- разбор ST на дерево ветвей (нужен двум правилам ниже) ----------
+# Условие в ST не содержит `;`, поэтому `[^;]*?` — надёжная граница для IF..THEN.
+# Сканируем в ДВА прохода: сначала структурные слова, потом текст между ними режем
+# по `;` на операторы. Один проход с «оператором» в альтернативах не годится: `[^;]+;`
+# стартует раньше ключевого слова и съедает `IF ... THEN` вместе с телом ветви.
+_ST_KW = re.compile(r"""
+      (?P<endif>\bEND_IF\b)
+    | (?P<elsif>\bELSIF\b(?P<ec>[^;]*?)\bTHEN\b)
+    | (?P<else>\bELSE\b)
+    | (?P<if>\bIF\b(?P<ic>[^;]*?)\bTHEN\b)
+    | (?P<case>\bCASE\b[^;]*?\bOF\b) | (?P<endcase>\bEND_CASE\b)
+    | (?P<for>\bFOR\b[^;]*?\bDO\b)   | (?P<endfor>\bEND_FOR\b)
+    | (?P<while>\bWHILE\b[^;]*?\bDO\b) | (?P<endwhile>\bEND_WHILE\b)
+    | (?P<repeat>\bREPEAT\b) | (?P<until>\bUNTIL\b[^;]*?\bEND_REPEAT\b)
+""", re.I | re.S | re.X)
+_ST_OPEN = ("case", "for", "while", "repeat")
+_ST_CLOSE = ("endcase", "endfor", "endwhile", "until")
+_ST_KINDS = ("endif", "elsif", "else", "if", "case", "endcase", "for", "endfor",
+             "while", "endwhile", "repeat", "until")
+
+
+def st_blocks(body):
+    """ST → узлы: {kind:'stmt',line,text} | {kind:'if',line,has_else,branches:[{cond,line,
+    items,is_else}]} | {kind:'loop',line,items}. CASE/FOR/WHILE — ветвь НЕ исчерпывающая."""
+    src = blank_comments(body or "")
+    root = []
+    stack = [{"kind": "seq", "cur": root}]
+
+    def lineno(pos):
+        return src[:pos].count("\n") + 1
+
+    def flush(a, b):
+        pos = a
+        for part in re.split(r"(;)", src[a:b]):
+            if part == ";":
+                pos += 1
+                continue
+            txt = part.strip()
+            if txt:
+                stack[-1]["cur"].append(
+                    {"kind": "stmt", "text": txt + ";",
+                     "line": lineno(pos + len(part) - len(part.lstrip()))})
+            pos += len(part)
+
+    prev = 0
+    for m in _ST_KW.finditer(src):
+        flush(prev, m.start())
+        prev = m.end()
+        kind = next(k for k in _ST_KINDS if m.group(k) is not None)
+        line = lineno(m.start())
+        cur = stack[-1]["cur"]
+        if kind == "if":
+            node = {"kind": "if", "line": line, "has_else": False,
+                    "branches": [{"cond": m.group("ic"), "line": line,
+                                  "items": [], "is_else": False}]}
+            cur.append(node)
+            stack.append({"kind": "if", "node": node, "cur": node["branches"][0]["items"]})
+        elif kind in ("elsif", "else"):
+            if stack[-1]["kind"] != "if":
+                continue          # ELSE у CASE — не ветвь IF
+            node = stack[-1]["node"]
+            br = {"cond": m.group("ec") if kind == "elsif" else "", "line": line,
+                  "items": [], "is_else": kind == "else"}
+            node["branches"].append(br)
+            node["has_else"] = node["has_else"] or kind == "else"
+            stack[-1]["cur"] = br["items"]
+        elif kind == "endif":
+            if stack[-1]["kind"] == "if":
+                stack.pop()
+        elif kind in _ST_OPEN:
+            node = {"kind": "loop", "line": line, "items": []}
+            cur.append(node)
+            stack.append({"kind": "loop", "node": node, "cur": node["items"]})
+        elif kind in _ST_CLOSE:
+            if stack[-1]["kind"] == "loop":
+                stack.pop()
+    flush(prev, len(src))
+    return root
+
+
+_ST_ASSIGN = re.compile(r"^\s*([A-Za-z_][\w.]*(?:\[[^\]]*\])?)\s*:=\s*(.+?);?\s*$", re.S)
+
+
+def st_key(name):
+    """Ключ переменной: регистр не значащий, префикс `gvl.` снят (в проектах с
+    qualified_only глобал пишется `gvl.X`, а в GVL объявлен как `X`)."""
+    k = (name or "").strip().lower()
+    return k[4:] if k.startswith("gvl.") else k
+
+
+def st_assignment(text):
+    m = _ST_ASSIGN.match(text)
+    if not m or "(" in m.group(1):
+        return None
+    return m.group(1).strip(), m.group(2).strip()
+
+
+def st_assigned_in(items):
+    """Всё, чему присваивается внутри узлов (рекурсивно)."""
+    out = set()
+    for it in items:
+        if it["kind"] == "stmt":
+            a = st_assignment(it["text"])
+            if a:
+                out.add(st_key(a[0]))
+        elif it["kind"] == "if":
+            for b in it["branches"]:
+                out |= st_assigned_in(b["items"])
+        else:
+            out |= st_assigned_in(it["items"])
+    return out
+
+
+def st_defs(items):
+    """Исчерпывающие присваивания ветви: {ключ: [(rhs, line), ...]}.
+
+    Присвоили не на всех путях — ЗАБЫВАЕМ переменную: в этом скане у неё может
+    остаться значение прошлого цикла, и подстановка была бы неверной."""
+    cur = {}
+    for it in items:
+        if it["kind"] == "stmt":
+            a = st_assignment(it["text"])
+            if a:
+                cur[st_key(a[0])] = [(a[1], it["line"])]
+        elif it["kind"] == "if" and it["has_else"]:
+            per = [st_defs(b["items"]) for b in it["branches"]]
+            common = set(per[0])
+            for d in per[1:]:
+                common &= set(d)
+            for d in per:
+                for v in d:
+                    if v not in common:
+                        cur.pop(v, None)
+            for v in common:
+                cur[v] = [x for d in per for x in d[v]]
+        else:
+            for v in st_assigned_in([it]):
+                cur.pop(v, None)
+    return cur
+
+
+# ---------- мини-решатель булевых формул ----------
+# Сравнения и вызовы функций целиком становятся непрозрачным атомом: правилу нужна
+# только структура AND/OR/XOR/NOT, арифметику оно не считает.
+_BTOK = re.compile(r"\s*(\(|\)|\bAND\b|\bOR\b|\bXOR\b|\bNOT\b|[^\s()]+)", re.I)
+_BCONT = re.compile(r"^(?:=|<>|<=|>=|<|>|\+|-|\*|/|\bMOD\b)$", re.I)
+BOOL_MAX_ATOMS = 14          # 2^14 переборов — предел, выше формулу не трогаем
+
+
+class _BoolParser:
+    def __init__(self, text):
+        self.toks, pos = [], 0
+        while pos < len(text):
+            m = _BTOK.match(text, pos)
+            if not m:
+                break
+            self.toks.append(m.group(1))
+            pos = m.end()
+        self.i = 0
+
+    def peek(self):
+        return self.toks[self.i] if self.i < len(self.toks) else None
+
+    def up(self):
+        t = self.peek()
+        return t.upper() if t else None
+
+    def _chain(self, op, nxt):
+        f = nxt()
+        if f is None:
+            return None
+        parts = [f]
+        while self.up() == op:
+            self.i += 1
+            f = nxt()
+            if f is None:
+                return None
+            parts.append(f)
+        return parts[0] if len(parts) == 1 else (op.lower(), parts)
+
+    def p_or(self):
+        return self._chain("OR", self.p_xor)
+
+    def p_xor(self):
+        return self._chain("XOR", self.p_and)
+
+    def p_and(self):
+        return self._chain("AND", self.p_not)
+
+    def p_not(self):
+        if self.up() == "NOT":
+            self.i += 1
+            f = self.p_not()
+            return None if f is None else ("not", f)
+        return self.p_prim()
+
+    def p_prim(self):
+        if self.peek() == "(":
+            save = self.i
+            self.i += 1
+            f = self.p_or()
+            if f is not None and self.peek() == ")":
+                self.i += 1
+                nxt = self.peek()
+                # `(x + 1) > y` — скобка была частью арифметики, а не булевой группой
+                if nxt is None or not _BCONT.match(nxt):
+                    return f
+            self.i = save
+        return self.p_atom()
+
+    def p_atom(self):
+        start, depth = self.i, 0
+        while self.i < len(self.toks):
+            t = self.toks[self.i]
+            u = t.upper()
+            if depth == 0 and (u in ("AND", "OR", "XOR", "NOT") or t == ")"):
+                break
+            depth += 1 if t == "(" else (-1 if t == ")" else 0)
+            self.i += 1
+        if self.i == start:
+            return None
+        raw = " ".join(self.toks[start:self.i])
+        norm = re.sub(r"\s+", "", raw).lower()
+        if norm in ("true", "1"):
+            return ("const", True)
+        if norm in ("false", "0"):
+            return ("const", False)
+        return ("atom", norm[4:] if norm.startswith("gvl.") else norm, raw)
+
+
+def bool_parse(text):
+    """Формула или None (не разобралось / остался хвост)."""
+    if not text or not text.strip():
+        return None
+    p = _BoolParser(text)
+    f = p.p_or()
+    return f if f is not None and p.i == len(p.toks) else None
+
+
+def bool_atoms(f, acc=None):
+    acc = set() if acc is None else acc
+    if f[0] == "atom":
+        acc.add(f[1])
+    elif f[0] == "not":
+        bool_atoms(f[1], acc)
+    elif f[0] in ("and", "or", "xor"):
+        for s in f[1]:
+            bool_atoms(s, acc)
+    return acc
+
+
+def bool_eval(f, env):
+    k = f[0]
+    if k == "const":
+        return f[1]
+    if k == "atom":
+        return env[f[1]]
+    if k == "not":
+        return not bool_eval(f[1], env)
+    if k == "and":
+        return all(bool_eval(s, env) for s in f[1])
+    if k == "or":
+        return any(bool_eval(s, env) for s in f[1])
+    r = False
+    for s in f[1]:
+        r ^= bool_eval(s, env)
+    return r
+
+
+def bool_subst(f, consts):
+    """Подставляет известные константы в формулу: {имя атома: True/False}."""
+    k = f[0]
+    if k == "atom":
+        v = consts.get(f[1])
+        return ("const", v) if v is not None else f
+    if k == "not":
+        return ("not", bool_subst(f[1], consts))
+    if k in ("and", "or", "xor"):
+        return (k, [bool_subst(s, consts) for s in f[1]])
+    return f
+
+
+def bool_simplify(f):
+    """Схлопывает константы: `x OR FALSE` → `x`, `x AND FALSE` → FALSE."""
+    k = f[0]
+    if k == "not":
+        inner = bool_simplify(f[1])
+        return ("const", not inner[1]) if inner[0] == "const" else ("not", inner)
+    if k in ("and", "or"):
+        kill, drop = (False, True) if k == "and" else (True, False)
+        parts = []
+        for s in (bool_simplify(x) for x in f[1]):
+            if s[0] == "const":
+                if s[1] is kill:
+                    return ("const", kill)
+                continue            # нейтральный элемент выбрасываем
+            parts.append(s)
+        if not parts:
+            return ("const", drop)
+        return parts[0] if len(parts) == 1 else (k, parts)
+    return f
+
+
+def bool_text(f):
+    """Формула обратно в текст — для сообщения находки."""
+    k = f[0]
+    if k == "const":
+        return "TRUE" if f[1] else "FALSE"
+    if k == "atom":
+        return f[1]
+    if k == "not":
+        inner = bool_text(f[1])
+        return f"NOT {inner}" if f[1][0] in ("atom", "const") else f"NOT ({inner})"
+    joiner = f" {k.upper()} "
+    return joiner.join(bool_text(s) if s[0] in ("atom", "const", "not")
+                       else f"({bool_text(s)})" for s in f[1])
+
+
+def bool_const(f):
+    """True/False, если формула тождественна константе, иначе None."""
+    names = sorted(bool_atoms(f))
+    if len(names) > BOOL_MAX_ATOMS:
+        return None
+    vals = set()
+    for mask in range(1 << len(names)):
+        vals.add(bool_eval(f, {n: bool(mask >> i & 1) for i, n in enumerate(names)}))
+        if len(vals) > 1:
+            return None
+    return vals.pop() if vals else None
+
+
+# ---------- таймер сбрасывается собственным условием отсчёта ----------
+_TR_CALL = re.compile(r"\b([A-Za-z_]\w*)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)", re.S)
+_TR_IN = re.compile(r"\b(?:IN|CLK|CU)\s*:=\s*([^,)]+)", re.I | re.S)
+_TR_SIMPLE = re.compile(r"^[A-Za-z_][\w.]*(?:\[[^\]]*\])?$")
+_TR_KNOWN = ("TON", "TOF", "TP", "TONOF", "BLINK")
+
+
+def _tr_polarity(kind):
+    """Что именно ломает отсчёт у таймера этого типа.
+
+    Дефект один и тот же — отсчёт разрушает код, который сам же таймер и открывает, —
+    но «неправильная запись» у разных таймеров разная. TON отсчитывает, пока вход
+    держится TRUE, значит губит его гашение. TOF отсчитывает задержку выключения,
+    пока вход держится FALSE, значит губит его повторное взведение: выдержка не
+    истекает никогда, и оборудование не выключается.
+
+    TP и BLINK не подходят ни подо что: у TP вход работает как фронт, импульс идёт
+    независимо от входа, а BLINK — мигалка без выдержки. На них правило молчит.
+
+    Неизвестный тип (своя обёртка над таймером, видим только `.Q`) считаем задержкой
+    включения: так правило вело себя до разделения полярностей, и на корпусе это
+    давало ноль ложных."""
+    if kind == "TOF":
+        return ("off",)
+    if kind == "TONOF":
+        return ("on", "off")
+    if kind in ("TP", "BLINK"):
+        return ()
+    return ("on",)
+
+
+def _tr_in_var(text):
+    """`T(IN := V)` → ('T','V'), если V — простая булева переменная, иначе None."""
+    for m in _TR_CALL.finditer(text):
+        a = _TR_IN.search(m.group(2))
+        if not a:
+            continue
+        v = a.group(1).strip()
+        if _TR_SIMPLE.match(v) and v.upper() not in ("TRUE", "FALSE"):
+            return m.group(1), v
+    return None
+
+
+def _tr_forced(items, var, want, start=0):
+    """Приходит ли var к want на ВСЕХ путях среди items[start:]? → строка или None.
+
+    `want=False` — гашение входа (губит TON), `want=True` — повторное взведение
+    (губит TOF). В обе стороны требование одинаковое: значение должно быть именно
+    константой. Любое другое присваивание (`V := alarm OR cx`) — не сброс, а пересчёт
+    входа из других сигналов: с таким послаблением правило дало 9 ложных из 9 на
+    боевом 1_4pump, где четыре каскада пересчитывают stop_pause_N после вызова."""
+    k = st_key(var)
+    for it in items[start:]:
+        if it["kind"] == "stmt":
+            a = st_assignment(it["text"])
+            if not a or st_key(a[0]) != k:
+                continue
+            f = bool_parse(a[1])
+            if f is None:
+                continue
+            val = bool_const(f)
+            if val is want:
+                return it["line"]
+            if val is (not want):
+                return None          # увели в другую сторону — дефекта нет
+        elif it["kind"] == "if" and it["has_else"]:
+            lines = [_tr_forced(b["items"], var, want) for b in it["branches"]]
+            if all(lines):
+                return min(lines)    # переписали в каждой ветви — путь не обойти
+    return None
+
+
+def _tr_rearmed(items, start, inst, var):
+    """Между вызовом и сбросом таймер взвели ДРУГИМ условием → паттерн законный."""
+    for it in items[start:]:
+        if it["kind"] != "stmt":
+            continue
+        got = _tr_in_var(it["text"])
+        if got and got[0].lower() == inst.lower() and st_key(got[1]) != st_key(var):
+            return True
+    return False
+
+
+_TR_ZERO_PT = re.compile(r"T#0+(?:MS|S|M|H)?\b", re.I)
+
+
+def _tr_preset_positive(body, inst):
+    """Есть ли у экземпляра НЕнулевая уставка. При нулевой выход истинен сразу,
+    и рассуждение «Q тождественно ложен» неверно."""
+    for m in _TR_CALL.finditer(body):
+        if m.group(1).lower() != inst.lower():
+            continue
+        a = re.search(r"\bPT\s*:=\s*([^,)]+)", m.group(2), re.I)
+        if a and not _TR_ZERO_PT.fullmatch(a.group(1).strip()):
+            return True
+    a = re.search(rf"\b{re.escape(inst)}\s*\.\s*PT\s*:=\s*([^;]+)", body, re.I)
+    return bool(a) and not _TR_ZERO_PT.fullmatch(a.group(1).strip())
+
+
+def _tr_reduced(items, start, inst):
+    """Первое условие ниже по ветви, где участвует `inst.Q`, и во что оно
+    превращается, если `Q` тождественно ложен. → (исходное, свёрнутое) или None.
+
+    Замечание с форума: при положительной уставке такой таймер не просто
+    отсчитывает мало — его выход мёртв, и условие равносильно записи вообще
+    без таймера. Показать это нагляднее, чем говорить «пауза короче уставки»."""
+    q = f"{inst.lower()}.q"
+    for it in items[start:]:
+        conds = ([b["cond"] for b in it["branches"] if not b["is_else"]]
+                 if it["kind"] == "if" else [])
+        for cond in conds:
+            f = bool_parse(cond)
+            if f is None or q not in {a.lower() for a in bool_atoms(f)}:
+                continue
+            red = bool_simplify(bool_subst(f, {a: False for a in bool_atoms(f)
+                                               if a.lower() == q}))
+            text = re.sub(r"\s+", " ", cond).strip()
+            return text, bool_text(red)
+    return None
+
+
+def _tr_scan(pou, items, timers, hits):
+    for i, it in enumerate(items):
+        if it["kind"] == "stmt":
+            got = _tr_in_var(it["text"])
+            if got and got[0].lower() in timers and not _tr_rearmed(items, i + 1, *got):
+                for kind in timers[got[0].lower()]:
+                    # 'on' — губит гашение входа (TON), 'off' — повторное взведение (TOF)
+                    rl = _tr_forced(items, got[1], kind == "off", i + 1)
+                    if rl:
+                        red = _tr_reduced(items, i, got[0]) if kind == "on" else None
+                        hits.append((pou, it["line"], got[0], got[1], rl,
+                                     re.sub(r"\s+", " ", it["text"]).strip()[:110],
+                                     kind, red))
+                        break
+        elif it["kind"] == "if":
+            for b in it["branches"]:
+                _tr_scan(pou, b["items"], timers, hits)
+        else:
+            _tr_scan(pou, it["items"], timers, hits)
+
+
+def heur_timer_reset(pous):
+    """Таймер отсчитывает по переменной, которую гасят ниже в той же ветви.
+
+    Боевой случай (пауза разгона пары раб/резерв): `pauseRazgon(IN := run_2);`, а run_2
+    гасится в обеих ветвях следующего IF. Скан N — таймер пошёл, run_2 сброшен; скан N+1 —
+    IN уже FALSE, таймер обнулён, условие открыто. Пауза живёт один цикл задачи вместо
+    уставки: на модели 0,01 с при заданных 30 с. Уставка есть на экране, оператор её
+    крутит, она ни на что не влияет.
+
+    Точность держится на том, что сброс обязан быть НА ВСЕХ ПУТЯХ после вызова в той же
+    ветви. Сброс под условием (`IF T.Q THEN V := FALSE`) — штатный одновыстрел, таймер
+    успевает отсчитать PT. Сброс в соседней ветви — тоже норма. Поэтому правило смотрит
+    дерево ветвей, а не соседство строк."""
+    hits = []
+    for name, d in pous.items():
+        body = blank_comments(d["body"])
+        # «таймер» = экземпляр, чей .Q читают в этом POU, либо объявленный TON/TOF/TP.
+        # Без этого правило ловило бы любой FB со входом IN.
+        decl = {n.lower(): (t or "").upper()
+                for n, t in _iface_names(d.get("iface"), "localVars").items()}
+        names = {m.group(1).lower() for m in re.finditer(r"\b([A-Za-z_]\w*)\.Q\b", body, re.I)}
+        names |= {n for n, t in decl.items() if t in _TR_KNOWN}
+        # имя → какие полярности для него дефект; пустой набор (TP, BLINK) выпадает
+        timers = {n: _tr_polarity(decl.get(n, "")) for n in names}
+        timers = {n: p for n, p in timers.items() if p}
+        if timers:
+            _tr_scan(name, st_blocks(d["body"]), timers, hits)
+    return hits
+
+
+# ---------- таймер не может отсчитать: три находки из матрицы ----------
+#
+# Правила ниже найдены перебором сочетаний (prototypes/timer-matrix) и проверены
+# эмулятором скана: в каждой клетке измерено, доходит ли накопленное время до
+# уставки. Там, где не доходит ни при каком поведении входов, дефект в коде,
+# а не в стенде.
+
+def _tm_sites(items, inst, conds, out):
+    """Места вызова экземпляра вместе с условиями ветвей, внутри которых он лежит."""
+    for it in items:
+        if it["kind"] == "stmt":
+            for m in _TR_CALL.finditer(it["text"]):
+                if m.group(1).lower() != inst:
+                    continue
+                a = _TR_IN.search(m.group(2))
+                out.append({"conds": list(conds), "in": a.group(1).strip() if a else None,
+                            "line": it["line"], "items": items,
+                            "text": re.sub(r"\s+", " ", it["text"]).strip()[:110]})
+        elif it["kind"] == "if":
+            for b in it["branches"]:
+                _tm_sites(b["items"], inst, conds + ([] if b.get("is_else") else [b["cond"]]), out)
+        else:
+            _tm_sites(it["items"], inst, conds, out)
+
+
+def _tm_implies(cond, var):
+    """Условие ложно всегда, когда var = FALSE? Тогда внутрь ветви при снятом
+    входе не попасть — а выдержке выключения считать именно там."""
+    f = bool_parse(cond)
+    if f is None:
+        return False
+    atoms = sorted(bool_atoms(f))
+    k = st_key(var)
+    if k not in atoms or len(atoms) > BOOL_MAX_ATOMS:
+        return False
+    rest = [a for a in atoms if a != k]
+    for mask in range(1 << len(rest)):
+        env = {a: bool(mask >> i & 1) for i, a in enumerate(rest)}
+        env[k] = False
+        if bool_eval(f, env):
+            return False
+    return True
+
+
+_EDGES = ("R_TRIG", "F_TRIG")
+_COUNTERS = ("CTU", "CTD", "CTUD")
+# Вход по ФРОНТУ: детекторы и счётные входы CTU/CTUD. Сам ФБ сравнивает вход с
+# прошлым вызовом, поэтому пропущенный вызов для них — потерянное событие.
+_EDGE_INPUT = _EDGES + ("CTU", "CTUD")
+_STATEFUL = _TR_KNOWN + _EDGES + _COUNTERS
+
+
+def _tm_instances(d, kinds=None):
+    """Экземпляры ФБ с памятью: имя → тип."""
+    kinds = kinds or _TR_KNOWN
+    return {n.lower(): (t or "").upper()
+            for n, t in _iface_names(d.get("iface"), "localVars").items()
+            if (t or "").upper() in kinds}
+
+
+def heur_timer_off_delay_branch(pous):
+    """TOF вызывается только внутри ветви, условие которой требует его же вход.
+
+    Задержка выключения отсчитывается, пока вход СНЯТ. Если таймер вызывают
+    только там, где вход поднят, в момент снятия команды вызова нет вовсе,
+    накопленное время стоит на нуле, и выдержка не кончается никогда —
+    оборудование не выключается. Для TON тот же код безупречен: он и должен
+    считать, пока условие истинно. Замер на эмуляторе: ET остался 0 из 5000 мс
+    при всех четырёх поведениях входов."""
+    hits = []
+    for name, d in pous.items():
+        tree = st_blocks(d["body"] or "")
+        for inst, typ in _tm_instances(d).items():
+            if typ not in ("TOF", "TONOF"):
+                continue
+            sites = []
+            _tm_sites(tree, inst, [], sites)
+            if not sites:
+                continue
+            if all(s["in"] and any(_tm_implies(c, s["in"]) for c in s["conds"]) for s in sites):
+                hits.append((name, sites[0]["line"], inst, sites[0]["in"], sites[0]["text"]))
+    return hits
+
+
+def heur_fb_call_overwritten(pous):
+    """Два вызова одного экземпляра подряд в одной ветви с разными входами.
+
+    Второй вызов перетирает первый в том же скане: до таймера доходит только
+    последнее значение входа. Вызовы во ВЗАИМОИСКЛЮЧАЮЩИХ ветвях — приём
+    законный («в одной ветви пускаем, в другой сбрасываем»), он встретился на
+    корпусе семь раз и правилом не трогается."""
+    hits = []
+    for name, d in pous.items():
+        tree = st_blocks(d["body"] or "")
+        for inst in _tm_instances(d, _STATEFUL):
+            sites = []
+            _tm_sites(tree, inst, [], sites)
+            with_in = [s for s in sites if s["in"]]
+            for i in range(len(with_in) - 1):
+                a, b = with_in[i], with_in[i + 1]
+                if a["items"] is b["items"] and st_key(a["in"]) != st_key(b["in"]):
+                    hits.append((name, b["line"], inst, a["in"], b["in"], a["line"], b["text"]))
+                    break
+    return hits
+
+
+def heur_edge_lost_in_own_branch(pous):
+    """Вход по фронту: ФБ вызывают только внутри ветви, требующей этот же вход.
+
+    Детектор сравнивает вход с тем, что видел в ПРОШЛЫЙ раз. Если его вызывают
+    только там, где вход поднят, то снятия входа он не видит вовсе: внутренняя
+    память остаётся взведённой, и каждый следующий подъём фронтом уже не
+    считается. Замер на эмуляторе: детектор дал одно срабатывание на десять
+    переходов, счётчик CTU насчитал 1 при уставке 5. Первое событие при этом
+    проходит, поэтому при беглой проверке на объекте всё выглядит рабочим."""
+    hits = []
+    for name, d in pous.items():
+        tree = st_blocks(d["body"] or "")
+        for inst, typ in _tm_instances(d, _EDGE_INPUT).items():
+            sites = []
+            _tm_sites(tree, inst, [], sites)
+            if not sites:
+                continue
+            if all(s["in"] and any(_tm_implies(c, s["in"]) for c in s["conds"]) for s in sites):
+                hits.append((name, sites[0]["line"], inst, typ, sites[0]["in"], sites[0]["text"]))
+    return hits
+
+
+def heur_fb_preset_missing(pous):
+    """У экземпляра нигде не задана уставка: ни в вызове, ни полем, ни в объявлении.
+
+    PT остаётся нулевым, и выход появляется в том же скане, в котором подняли
+    вход, — выдержки нет вовсе."""
+    hits = []
+    for name, d in pous.items():
+        body = blank_comments(d["body"] or "")
+        iface = d.get("iface")
+        tree = st_blocks(d["body"] or "")
+        for inst, typ in _tm_instances(d, _TR_KNOWN + _COUNTERS).items():
+            field = "PV" if typ in _COUNTERS else "PT"
+            sites = []
+            _tm_sites(tree, inst, [], sites)
+            if not sites:
+                continue          # не вызван вовсе — это другое правило
+            if any(re.search(rf"\b{field}\s*:=", _TR_CALL.match(s["text"]).group(2), re.I)
+                   for s in sites if _TR_CALL.match(s["text"])):
+                continue
+            if re.search(rf"\b{re.escape(inst)}\s*\.\s*{field}\s*:=", body, re.I):
+                continue
+            if iface is not None and _tm_decl_has_pt(iface, inst, field):
+                continue
+            hits.append((name, sites[0]["line"], inst, typ, sites[0]["text"]))
+    return hits
+
+
+def _tm_decl_has_pt(iface, inst, field="PT"):
+    """Уставка задана начальным значением в объявлении: `t : TON := (PT := T#5S);`"""
+    for v in iface.iter(q("variable")):
+        if (v.get("name") or "").lower() != inst:
+            continue
+        return field in "".join(v.itertext()).upper()
+    return False
+
+
+# ---------- условие, тождественно ложное после подстановки ----------
+_AF_IN = re.compile(r"\bIN\s*:=\s*([^,)]+)", re.I | re.S)
+_AF_CALL = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(\s*\)\s*;", re.M)
+AF_MAX_COMBOS = 8            # произведение вариантов присваивания; выше — не считаем
+
+
+def _af_order(pous):
+    """Порядок вызова программ из PLC_PRG. Обязателен: подставлять можно только то,
+    что присвоено РАНЬШЕ в этом же скане. Для POU, вызванного позже, в условии живёт
+    значение прошлого цикла, и свёртка была бы неверной."""
+    main = next((n for n in pous if n.lower() in ("plc_prg", "main")), None)
+    order = []
+    if main:
+        for m in _AF_CALL.finditer(blank_comments(pous[main]["body"])):
+            order += [n for n in pous if n.lower() == m.group(1).lower() and n not in order]
+    return order + [n for n in pous if n not in order]
+
+
+def _af_alts(var, rhs_list, pou, snap, budget):
+    """Варианты формулы для одного атома + плоская цепочка «кто чему равен».
+    [] = подставлять нельзя."""
+    out = []
+    for rhs, line in rhs_list:
+        f = bool_parse(rhs)
+        if f is None:
+            return []                       # хоть один путь не разобрали — молчим
+        step = (var, rhs.strip(), pou, line)
+        subs = _af_expand(f, snap, budget - 1) if budget > 0 else []
+        out += [(g, [step] + ch) for g, ch in subs] or [(f, [step])]
+    return out
+
+
+def _af_expand(f, defs, budget):
+    """[(формула, цепочка)] — все комбинации подстановок, [] если подставить нечего.
+
+    У каждого присваивания свой снимок локалов НА МОМЕНТ присваивания. Брать итоговые
+    значения нельзя: на боевом проекте это дало ложный FALSE на штатном детекторе фронта
+    (`start_edge := (run AND PS) AND NOT run_last;` считается ДО обновления run_last,
+    то есть по значению прошлого цикла)."""
+    tables = []
+    for n in sorted(a for a in bool_atoms(f) if a in defs):
+        rhs_list, pou, hop, snap = defs[n]
+        alts = _af_alts(n, rhs_list, pou, snap, budget if hop else 0)
+        if alts:
+            tables.append((n, alts))
+    if not tables:
+        return []
+    total = 1
+    for _n, alts in tables:
+        total *= len(alts)
+    if total > AF_MAX_COMBOS:
+        return []
+    combos = [({}, [])]
+    for n, alts in tables:
+        combos = [(dict(m, **{n: a[0]}), ch + a[1]) for m, ch in combos for a in alts]
+    return [(_af_apply(f, m), ch) for m, ch in combos]
+
+
+def _af_apply(f, mapping):
+    if f[0] == "atom":
+        return mapping.get(f[1], f)
+    if f[0] == "not":
+        return ("not", _af_apply(f[1], mapping))
+    if f[0] in ("and", "or", "xor"):
+        return (f[0], [_af_apply(s, mapping) for s in f[1]])
+    return f
+
+
+def _af_check(pou, line, kind, text, defs, hits):
+    f = bool_parse(text)
+    if f is None or len(bool_atoms(f)) < 2 or bool_const(f) is not None:
+        return                      # свёрнуто без подстановки — это другое правило
+    variants = _af_expand(f, defs, 2)
+    if not variants:
+        return
+    vals = {bool_const(g) for g, _ch in variants}
+    if len(vals) != 1 or None in vals:
+        return
+    hits.append((pou, line, kind, vals.pop(),
+                 re.sub(r"\s+", " ", text).strip()[:110], variants[0][1]))
+
+
+def _af_walk(pou, items, defs, locals_, hits):
+    cur = dict(defs)
+
+    def snap():
+        return {k: v for k, v in cur.items() if k in locals_}
+
+    for it in items:
+        if it["kind"] == "stmt":
+            for m in _AF_IN.finditer(it["text"]):
+                _af_check(pou, it["line"], "in", m.group(1), cur, hits)
+            a = st_assignment(it["text"])
+            if a:
+                _af_check(pou, it["line"], "assign", a[1], cur, hits)
+                cur[st_key(a[0])] = ([(a[1], it["line"])], pou, 1, snap())
+        elif it["kind"] == "if":
+            for b in it["branches"]:
+                if not b["is_else"]:
+                    _af_check(pou, b["line"], "cond", b["cond"], cur, hits)
+                _af_walk(pou, b["items"], cur, locals_, hits)
+            if it["has_else"]:
+                for k, v in st_defs([it]).items():
+                    cur[k] = (v, pou, 1, snap())
+            else:
+                for k in st_assigned_in([it]):
+                    cur.pop(k, None)
+        else:
+            _af_walk(pou, it["items"], cur, locals_, hits)
+            for k in st_assigned_in([it]):
+                cur.pop(k, None)
+
+
+def dead_timer_q(pous):
+    """Экземпляры, чей `.Q` тождественно ложен: вход гасят на всех путях, а
+    уставка положительна. → {POU: {ключ атома: (имя, строка)}}.
+
+    Нужно булеву решателю: мёртвый выход делает константой не только своё
+    условие, но и соседние, где он участвует сомножителем."""
+    out = {}
+    for pou, i, inst, _var, _rl, _ln, kind, _red in heur_timer_reset(pous):
+        if kind != "on" or not _tr_preset_positive(blank_comments(pous[pou]["body"] or ""), inst):
+            continue
+        out.setdefault(pou, {})[st_key(f"{inst}.Q")] = (inst, i)
+    return out
+
+
+def heur_always_false(pous, decl, dead=None):
+    """Условие, которое после подстановки присваиваний этого же скана тождественно
+    ложно (или истинно).
+
+    Боевой случай: одна программа формирует команду (`gvl.run_podpitka := gvl.PS_podpitka`),
+    другая проверяет её же вместе с источником (`IN := NOT gvl.PS_podpitka AND
+    gvl.run_podpitka`). После подстановки — `NOT X AND X`, всегда FALSE: авария «нет воды»
+    физически не может сработать, строка в журнале есть, защиты нет. Глазами такое не
+    ловится: у владельца тот же дефект воспроизвёлся ВТОРОЙ раз в том же месте.
+
+    Подставляем только то, что в этом скане известно точно: присваивание должно покрывать
+    все пути (st_defs), а POU-источник — вызываться раньше по PLC_PRG. Если переменной
+    присвоено в нескольких ветвях, подставляем КАЖДОЕ значение и флагуем лишь тогда, когда
+    константа выходит при всех — иначе это не дефект, а один из режимов."""
+    trees = {n: st_blocks(d["body"]) for n, d in pous.items()}
+    gdefs, hits = {}, []
+    for pou in _af_order(pous):
+        locals_ = set()
+        for tag in ("localVars", "inputVars", "outputVars", "inOutVars", "tempVars"):
+            locals_ |= {k.lower() for k in _iface_names(pous[pou].get("iface"), tag)}
+        start = dict(gdefs)
+        # Мёртвый выход таймера — такой же известный факт этого скана, как
+        # присваивание константы, и подставляется наравне с ними.
+        for key, (_inst, ln) in ((dead or {}).get(pou) or {}).items():
+            start[key] = ([("FALSE", ln)], pou, 1, {})
+        _af_walk(pou, trees[pou], start, locals_, hits)
+        final = st_defs(trees[pou])
+        loc_snap = {k: (v, pou, 1, {}) for k, v in final.items() if k in locals_}
+        for k, v in final.items():
+            if k in decl or k not in locals_:
+                gdefs[k] = (v, pou, 1, loc_snap)
+    return hits
+
+
+# ---------- сигнал состояния читается, но его никто не формирует ----------
+# Г5 (главная грабля правила): «не присваивается в ST» ещё не значит «нет источника».
+# Команды и уставки законно пишутся с экрана визуализации, а показания датчиков — прямо
+# с канала модуля; в PLCopenXML ни того, ни другого в тексте программы не видно. Поэтому
+# проверяем только имена, семантически являющиеся сигналами СОСТОЯНИЯ, только булевы,
+# и выбрасываем всё, что привязано к каналу в дереве устройств. На боевом корпусе это
+# сняло 71 ложное срабатывание из 77: выход FB пишет глобал прямо в вызове (`=>`),
+# запись идёт в бит (`gvl.error_bits.0 := TRUE`), диагностический код канала — не BOOL.
+_SWS_STATE = re.compile(r"^(?:alarm|error|err|fault|avar|warn|trip)_|"
+                        r"_(?:alarm|avar|fault|error)$|^(?:alarm|avaria|avariya)\d*$", re.I)
+_SWS_SCREEN = re.compile(r"^(?:run|start|stop|cmd|block|manual|hand|auto|reset|kvit|ack|set|"
+                         r"mode|zadanie|rezhim)_|^(?:set|ustavka|zadanie)|"
+                         r"_(?:ustavka|zadanie|set|sp|reset|kvit|ack)$|"
+                         r"^(?:reset|kvit|ack|block|manual)$", re.I)
+_SWS_WRITE = re.compile(r"([A-Za-z_][\w.]*(?:\[[^\]]*\])?)\s*:=|"
+                        r"=>\s*([A-Za-z_][\w.]*(?:\[[^\]]*\])?)")
+_SWS_IDENT = re.compile(r"\b((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\b")
+_SWS_BOOL = re.compile(r"^(?:ARRAY\s*\[[^\]]*\]\s*OF\s*)?BOOL\s*$", re.I)
+
+
+def _sws_base(name):
+    """`gvl.error_bits.0` → `error_bits`: снимаем префикс gvl., индекс массива и побитовый
+    доступ. Брать последний компонент нельзя — запись в бит тогда числится записью в «0»."""
+    return st_key(re.sub(r"\[[^\]]*\]", "", name or "")).split(".")[0]
+
+
+def heur_signal_without_source(pous, decl, root, screen_reads=(), screen_writes=()):
+    """Авария читается в условии, но её никто не формирует: защита мёртвая.
+
+    Боевой случай: `alarm_kotel[1..3]` и `alarm_peregrev_kotel[1..3]` читаются в трёх местах
+    (исключение котла из каскада, общая авария, счётчик для шапки) и не присваиваются нигде —
+    обратной связи от котлов на объекте нет вообще. Каскад никогда не узнает, что котёл встал:
+    запрос висит, место в очереди не освобождается, в журнале мёртвые строки. Второй боевой
+    случай: у одиночных насосов сигнал аварии ждали от электриков, он так и не пришёл, а
+    условие блокировки пуска `NOT alarm_nasos_CO` осталось в коде и выполняется всегда.
+    """
+    io_bound = {st_key(m).split(".")[0]
+                for m in _APPVAR_RE.findall(ET.tostring(root, encoding="unicode"))}
+    # графику разбираем только по вхождению имён: отличить там чтение от записи нельзя,
+    # поэтому всё упомянутое в LD/FBD/SFC/CFC считаем имеющим источник и не трогаем
+    graph = set()
+    for pou in root.iter(q("pou")):
+        for b in pou.iter(q("body")):
+            for m in _SWS_IDENT.finditer(graphical_text(b)):
+                graph.add(_sws_base(m.group(1)))
+
+    written, read_in = set(), {}
+    for name, d in pous.items():
+        src = blank_comments(d.get("fulltext", d["body"]))
+        for m in _SWS_WRITE.finditer(src):
+            written.add(_sws_base(m.group(1) or m.group(2)))
+        # читаем ПОСЛЕ снятия левых частей: `x := 0` не делает x прочитанным
+        for m in _SWS_IDENT.finditer(_SWS_WRITE.sub(" ", src)):
+            read_in.setdefault(_sws_base(m.group(1)), set()).add(name)
+    # Экран — полноправный источник: поле ввода уставки и кнопка ПИШУТ переменную.
+    # В PLCopenXML этого не видно (отсюда осторожный список исключений по именам),
+    # а в .export видно, и тогда «никто не формирует» — факт.
+    written |= {_sws_base(n) for n in screen_writes}
+    for n in screen_reads:
+        read_in.setdefault(_sws_base(n), set()).add("visu")
+    # Привязки экранов нам отдали → вывод подтверждён, а не выведен из имени.
+    # Это и есть разница между осторожным medium на PLCopenXML и high на .export.
+    confirmed = bool(screen_reads or screen_writes)
+
+    hits = []
+    for var in sorted(decl):
+        k = _sws_base(var)
+        if k in written or k in io_bound or k in graph or k not in read_in:
+            continue
+        if not _SWS_BOOL.match((decl.get(var) or "").strip()):
+            continue
+        if not _SWS_STATE.search(k) or _SWS_SCREEN.search(k):
+            continue
+        hits.append((var, sorted(read_in[k]), confirmed))
+    return hits
+
+
+# ---------- правила по CODESYS ExportFile: параметры модулей и экраны ----------
+# В PLCopenXML этого нет вовсе: ни «Параметров устройства», ни привязок визуализации.
+# Поэтому класс дефектов ниже не проверяет ни один статический анализатор — все читают ST.
+_EX_FMT = re.compile(r"%[-+ #0]*\d*(?:\.\d+)?[a-zA-Z%]")   # %d, %2.1f, %%, %s
+_EX_RUS = re.compile(r"[А-Яа-яЁё]")
+_EX_OFF = ("отключен", "выключен", "off", "disabled", "none")
+
+
+def _ex_label(text):
+    """Подпись без формата вывода. `%2.0f Гц` → `Гц`.
+
+    Цифры формата — не номер оборудования: на боевом проекте сравнение «номер в подписи
+    против индекса в переменной» дало 4 ложных из 4 именно на них (`act_FH1` ↔ `%2.0f Гц`)."""
+    return _EX_FMT.sub(" ", text or "").strip()
+
+
+def _ex_norm(text):
+    """Подпись для сравнения: лишние пробелы не делают подписи разными.
+    Без этого «Тек. уставка  %d °C» и «Тек. уставка %d °C» выглядели как две разные."""
+    return re.sub(r"\s+", " ", _ex_label(text)).strip().lower()
+
+
+def _ex_nums(text):
+    return [int(x) for x in re.findall(r"\d+", text or "")]
+
+
+def heur_export_devices(export):
+    """Настройки модулей, молчаливое значение которых означает «канал не работает».
+
+    → [(устройство, ключ параметра, подпись, вид)], вид ∈ sensor-off / output-off / module-off.
+
+    Канал со снятым типом датчика не оцифровывается, а переменная остаётся нулём: для
+    наружной температуры это «на улице 0 °C» и сразу неверный график отопления. Модуль
+    с `Disable_module = TRUE` исключён из опроса целиком — все его сигналы мёртвые.
+
+    Ключевая точность — «на ЗАНЯТОМ канале»: свободных входов у модуля больше, чем
+    занятых, и для них «Отключен» — правильная настройка. Занятость определяется
+    привязкой значения канала, а не кода статуса (его вешают и на свободные входы)."""
+    hits = []
+    for d in export.devices:
+        used = d.used_channels()
+        for key, label, val, _dflt, enums in d.params:
+            human = (enums or {}).get(val) or ""
+            low = human.strip().lower()
+            if key.endswith(".SensorType") and val == "0":
+                ch = "".join(re.findall(r"\d+", key.split(".")[0]))
+                if ch and ch in used:
+                    hits.append((d.name, key, label or human, "sensor-off"))
+            elif key.endswith(".OutputType") and val == "0" and (not human or low in _EX_OFF):
+                hits.append((d.name, key, label or human, "output-off"))
+            elif key.endswith("Disable_module") and val.strip().upper() == "TRUE":
+                hits.append((d.name, key, label or human, "module-off"))
+    return hits
+
+
+def heur_export_visu(export):
+    """Экраны: копипаста элемента вместе с чужой привязкой.
+
+    → [(экран, переменная, вид, подробность)], вид ∈ two-labels / index-mismatch.
+
+    Две находки одного происхождения — элемент скопировали и не поправили привязку:
+      * одна переменная выведена под разными подписями («насос 2 показывает насос 1»);
+      * номер в подписи не совпадает с индексом в переменной («Котёл 3» ↔ alarm_kotel[2]).
+    Сравниваем только осмысленные подписи (с буквами) и только однозначные номера:
+    двузначные и выше — это адреса, уставки и шкалы, там совпадать ничего не обязано."""
+    hits = []
+    for v in export.visus:
+        seen, idx = {}, []
+        for props in v.elements:
+            var = v.var_of(props)
+            if not var:
+                continue
+            label = _ex_label(v.text_of(props))
+            if not (label and _EX_RUS.search(label)):
+                continue
+            seen.setdefault(var, set()).add(_ex_norm(v.text_of(props)))
+            nt, nv = _ex_nums(label), _ex_nums(var)
+            if nt and nv and nt[-1] != nv[-1] and max(nt[-1], nv[-1]) <= 3:
+                idx.append((v.name, var, "index-mismatch", label[:60]))
+        two = {var for var, labels in seen.items() if len({s for s in labels if s}) > 1}
+        hits += [(v.name, var, "two-labels", " | ".join(sorted(s for s in seen[var] if s))[:90])
+                 for var in sorted(two)]
+        # у скопированного элемента оба признака сразу; один дефект — одна находка
+        hits += [h for h in idx if h[1] not in two]
+    return hits
+
+
+# ---------- сравнение беззнакового с нулём ----------
+# Классика, которую компилятор пропускает: `IF cnt < 0 THEN` при `cnt : UINT`. Ветвь
+# мертва, и обычно это не стиль, а след неверно выбранного типа: защиту от отрицательного
+# значения написали, а тип её отменил. Нашлось на боевом проекте (`AO_temp_kotel : UINT`,
+# зажим `IF AO_temp_kotel < 0 THEN AO_temp_kotel := 0`).
+_UNSIGNED_T = re.compile(r"^(?:USINT|UINT|UDINT|ULINT|BYTE|WORD|DWORD|LWORD)$", re.I)
+# `<` (но не `<>`) и `>=` слева, `>` и `<=` справа — только эти четыре формы тождественны
+_UZ_LEFT = re.compile(r"\b(?:gvl\.)?([A-Za-z_]\w*)\s*(<(?!>)|>=)\s*0(?![.\d])")
+_UZ_RIGHT = re.compile(r"(?<![\w.])0\s*(>|<=)\s*(?:gvl\.)?([A-Za-z_]\w*)\b")
+
+
+def heur_unsigned_vs_zero(pous, decl):
+    """[(pou, line, var, type, always_true, code)] — сравнение беззнакового с нулём."""
+    gl = {k: v for k, v in decl.items() if _UNSIGNED_T.match((v or "").strip())}
+    hits = []
+    for name, d in pous.items():
+        types = dict(gl)
+        for tag in ("localVars", "inputVars", "outputVars", "inOutVars", "tempVars"):
+            for var, typ in _iface_names(d.get("iface"), tag).items():
+                if _UNSIGNED_T.match((typ or "").strip()):
+                    types[var.lower()] = typ
+                else:
+                    types.pop(var.lower(), None)   # локал перекрывает глобал того же имени
+        if not types:
+            continue
+        for i, line in enumerate(blank_comments(d["body"]).splitlines(), 1):
+            for m in _UZ_LEFT.finditer(line):
+                var, op = m.group(1), m.group(2)
+                if var.lower() in types:
+                    hits.append((name, i, var, types[var.lower()], op == ">=",
+                                 line.strip()[:110]))
+            for m in _UZ_RIGHT.finditer(line):
+                op, var = m.group(1), m.group(2)
+                if var.lower() in types:
+                    hits.append((name, i, var, types[var.lower()], op == "<=",
+                                 line.strip()[:110]))
+    return hits
 
 
 # ---------- правила поиска багов: границы массива / бесконечный цикл / и т.д. ----------
@@ -1832,6 +2868,8 @@ class Report:
     device: dict = field(default_factory=dict)    # контроллер/модули/задачи
     coverage: dict = field(default_factory=dict)  # покрытие языков: {total, st, by_lang, nonst_count}
     modified: str = ""      # contentHeader@modificationDateTime — по нему определяется, какая версия новее
+    units: int = 0          # для .export: сколько объектов разобрано (модулей + экранов);
+    #                         у PLCopenXML размер проекта меряется в POU
 
     @property
     def summary(self):
@@ -1882,6 +2920,22 @@ RULES = {
     "param-channel-mismatch": ("high", "Параметр канала получает чужой канал"),
     "index-mismatch": ("medium", "Строка расставляет индексы иначе, чем группа"),
     "self-enable": ("high", "Команда зависит от собственной обратной связи"),
+    "timer-reset-by-own-condition": ("high", "Таймер гасит собственное условие отсчёта"),
+    "timer-rearmed-by-own-branch": ("high", "Задержка выключения не истекает никогда"),
+    "timer-off-delay-in-own-branch": ("high", "Выдержку выключения не вызывают, когда она должна считать"),
+    "fb-call-overwritten": ("high", "Второй вызов экземпляра перетирает первый"),
+    "edge-lost-in-own-branch": ("high", "Вход по фронту не видит снятия — считается только первое событие"),
+    "fb-preset-missing": ("high", "У экземпляра нигде не задана уставка"),
+    "always-false-condition": ("high", "Условие не выполнится ни при каких значениях"),
+    "signal-without-source": ("medium", "Аварию никто не формирует"),
+    "unsigned-vs-zero": ("medium", "Беззнаковое сравнивается с нулём"),
+    # только для CODESYS ExportFile (.export): в PLCopenXML параметров модулей и
+    # привязок визуализации нет вовсе
+    "channel-sensor-off": ("high", "У занятого канала снят тип датчика"),
+    "channel-output-off": ("high", "Выход модуля не настроен"),
+    "module-disabled": ("high", "Модуль исключён из опроса"),
+    "visu-two-labels": ("medium", "Одна переменная под двумя подписями"),
+    "visu-index-mismatch": ("medium", "Номер в подписи не равен индексу"),
 }
 
 
@@ -1894,7 +2948,9 @@ def quality_score(report) -> int:
     """0..100. Штраф по severity, нормированный на размер проекта (POU), чтобы крупные
     проекты не штрафовались несправедливо. Ориентир, не приговор."""
     penalty = sum(SCORE_WEIGHTS.get(f.severity, 0) for f in report.findings)
-    size = max(report.pou_count, 1)
+    # у .export нет POU: размер проекта там — число разобранных модулей и экранов,
+    # иначе балл нормировался бы на единицу и любой экспорт получал бы ноль
+    size = max(report.pou_count or report.units, 1)
     score = 100 - (penalty / size) * SCORE_FACTOR
     return max(0, min(100, round(score)))
 
@@ -1915,10 +2971,70 @@ def _title(rule: str) -> str:
     return RULES[rule][1]
 
 
-def analyze(src, profiles=None, lang="ru") -> Report:
+def analyze_export(src, profiles=None, lang="ru") -> Report:
+    """Разбор CODESYS ExportFile (.export): все правила по программам ПЛЮС пять правил,
+    которых нет в PLCopenXML — по параметрам модулей и экранам визуализации.
+
+    Программы в экспорте лежат построчно, а объявления отдельным разделом; мы собираем из
+    них дерево В ФОРМЕ PLCopenXML и отдаём обычному analyze(). Это осознанно дороже на одну
+    сериализацию, зато не появляется второй движок, который со временем разойдётся с первым:
+    правила, тексты и фикстуры остаются одни.
+
+    Чего на .export не будет: конфигурация задач в этом формате устроена иначе, поэтому
+    правила про сторожевой таймер и дубли Modbus-адресов молчат. Раздел устройств в отчёте
+    при этом заполняется — из дерева экспорта, а не из конфигурации PLCopenXML."""
+    import export_file
+
+    def T(rule):
+        return i18n.rule_title(lang, rule)
+
+    def D(key, **kw):
+        return i18n.detail(lang, key, **kw)
+
+    name = os.path.splitext(os.path.basename(src))[0] if isinstance(src, str) else "project"
+    ex = export_file.read(src)
+    reads, writes = ex.refs()
+    rep = analyze(ET.tostring(export_file.to_plcopen(ex, name), encoding="utf-8"),
+                  profiles=profiles, lang=lang,
+                  extra_refs={"text": ex.ref_text(), "reads": reads, "writes": writes})
+    rep.name = name
+
+    rule_by_kind = {"sensor-off": "channel-sensor-off", "output-off": "channel-output-off",
+                    "module-off": "module-disabled"}
+    for dev, key, label, kind in heur_export_devices(ex):
+        rule = rule_by_kind[kind]
+        rep.findings.append(Finding(
+            rule=rule, severity=_sev(rule), title=T(rule), pou=dev, line=0,
+            detail=D(rule, dev=dev, par=key, label=label or key)))
+    for screen, var, kind, extra in heur_export_visu(ex):
+        rule = "visu-two-labels" if kind == "two-labels" else "visu-index-mismatch"
+        rep.findings.append(Finding(
+            rule=rule, severity=_sev(rule), title=T(rule), pou=screen, line=0,
+            detail=D(rule, screen=screen, var=var, extra=extra)))
+
+    order = {"high": 0, "medium": 1, "low": 2}
+    rep.findings.sort(key=lambda f: (order.get(f.severity, 9), f.pou, f.line or 0, f.rule))
+    # модули и экраны — то, чего в PLCopenXML нет; размер проекта по-прежнему в POU,
+    # а units нужен, когда программ в экспорте не оказалось вовсе
+    rep.device = {"devices": [{"name": d.name, "params": len(d.params)} for d in ex.devices],
+                  "visus": [{"name": v.name, "elements": len(v.elements)} for v in ex.visus]}
+    rep.units = len(ex.devices) + len(ex.visus)
+    return rep
+
+
+def analyze(src, profiles=None, lang="ru", extra_refs=None) -> Report:
     """src: путь (str), bytes или file-like. profiles — набор опциональных стандарт-профилей
     (напр. {'plcopen-naming'}). lang — язык заголовков/деталей находок (ru/en).
+
+    extra_refs — использования ВНЕ программ: {"text", "reads", "writes"}. В PLCopenXML их
+    нет и быть не может, а из .export они приходят (привязки экранов, параметры
+    преобразований единиц). Без них правила «не используется / никто не формирует»
+    считают мёртвым то, что живёт на экране.
     Возвращает Report со структурированными findings."""
+    extra_refs = extra_refs or {}
+    _xtext = extra_refs.get("text", "")
+    _xreads = extra_refs.get("reads", ())
+    _xwrites = extra_refs.get("writes", ())
     profiles = set(profiles or ())
 
     def T(rule):                      # локализованный заголовок правила
@@ -2023,7 +3139,7 @@ def analyze(src, profiles=None, lang="ru") -> Report:
             pou=nm, line=i, detail=D("timer-zero-pt"), code=ln))
 
     # channel-mismatch — три признака одного класса: копия соседнего канала
-    for nm, base, miss, suf, have in heur_family_gap(pous, root):
+    for nm, base, miss, suf, have in heur_family_gap(pous, root, extra=_xtext):
         findings.append(Finding(
             rule="family-gap", severity=_sev("family-gap"), title=T("family-gap"),
             pou=nm, detail=D("family-gap", field=f"{base}_{miss}_{suf}", ch=miss,
@@ -2041,6 +3157,76 @@ def analyze(src, profiles=None, lang="ru") -> Report:
             rule="self-enable", severity=_sev("self-enable"), title=T("self-enable"),
             pou=nm, line=i, code=ln,
             detail=D("self-enable", cmd=cmd, fb=ftype, out=oname, inp=inp, sig=sig)))
+
+    for nm, i, timer, var, rl, ln, kind, red in heur_timer_reset(pous):
+        # Два зеркальных дефекта одной природы, но последствия разные: у задержки
+        # включения выдержка не наступает, у задержки выключения — не кончается,
+        # поэтому и правила разные, с разным текстом и разной подсказкой к правке.
+        rid = ("timer-rearmed-by-own-branch" if kind == "off"
+               else "timer-reset-by-own-condition")
+        text = D(rid, timer=timer, var=var, rl=rl)
+        if red:
+            # Выход такого таймера мёртв, и условие равносильно записи без него —
+            # это нагляднее, чем «пауза короче уставки».
+            text += D("timer-reset.reduced", timer=timer, cond=red[0], to=red[1])
+        findings.append(Finding(
+            rule=rid, severity=_sev(rid), title=T(rid), pou=nm, line=i, code=ln,
+            detail=text))
+
+    for nm, i, timer, var, ln in heur_timer_off_delay_branch(pous):
+        findings.append(Finding(
+            rule="timer-off-delay-in-own-branch", severity=_sev("timer-off-delay-in-own-branch"),
+            title=T("timer-off-delay-in-own-branch"), pou=nm, line=i, code=ln,
+            detail=D("timer-off-delay-in-own-branch", timer=timer, var=var)))
+
+    for nm, i, timer, v1, v2, l1, ln in heur_fb_call_overwritten(pous):
+        findings.append(Finding(
+            rule="fb-call-overwritten", severity=_sev("fb-call-overwritten"),
+            title=T("fb-call-overwritten"), pou=nm, line=i, code=ln,
+            detail=D("fb-call-overwritten", timer=timer, first=v1, second=v2, fl=l1)))
+
+    for nm, i, inst, typ, var, ln in heur_edge_lost_in_own_branch(pous):
+        findings.append(Finding(
+            rule="edge-lost-in-own-branch", severity=_sev("edge-lost-in-own-branch"),
+            title=T("edge-lost-in-own-branch"), pou=nm, line=i, code=ln,
+            detail=D("edge-lost-in-own-branch", edge=inst, type=typ, var=var)))
+
+    for nm, i, timer, typ, ln in heur_fb_preset_missing(pous):
+        findings.append(Finding(
+            rule="fb-preset-missing", severity=_sev("fb-preset-missing"),
+            title=T("fb-preset-missing"), pou=nm, line=i, code=ln,
+            detail=D("fb-preset-missing", timer=timer, type=typ)))
+
+    for nm, i, kind, val, ln, chain in heur_always_false(pous, decl,
+                                                        dead=dead_timer_q(pous)):
+        # цепочка подстановки — главное в сообщении: без неё человек видит нормальное
+        # условие и не понимает, почему оно «всегда ложно»
+        steps = " → ".join(
+            "`{}` = `{}` ({}{})".format(v, rhs, p, i18n.term(lang, "af.at_line", n=ln2))
+            for v, rhs, p, ln2 in chain)
+        findings.append(Finding(
+            rule="always-false-condition", severity=_sev("always-false-condition"),
+            title=T("always-false-condition"), pou=nm, line=i, code=ln,
+            detail=D("always-false-condition", what=i18n.term(lang, "af." + kind),
+                     val=i18n.term(lang, "af.false" if val is False else "af.true"),
+                     steps=steps)))
+
+    for var, readers, confirmed in heur_signal_without_source(pous, decl, root,
+                                                               _xreads, _xwrites):
+        findings.append(Finding(
+            rule="signal-without-source",
+            # на .export привязки экранов видны: «не пишется нигде» — факт, а не догадка
+            severity="high" if confirmed else _sev("signal-without-source"),
+            title=T("signal-without-source"), pou=readers[0], line=0,
+            detail=D("signal-without-source.confirmed" if confirmed else "signal-without-source",
+                     var=var, n=len(readers), readers=M(readers, 3))))
+
+    for nm, i, var, typ, always, ln in heur_unsigned_vs_zero(pous, decl):
+        findings.append(Finding(
+            rule="unsigned-vs-zero", severity=_sev("unsigned-vs-zero"),
+            title=T("unsigned-vs-zero"), pou=nm, line=i, code=ln,
+            detail=D("unsigned-vs-zero", var=var, type=typ,
+                     val=i18n.term(lang, "af.true" if always else "af.false"))))
 
     for nm, i, p1, p2, v1, v2, eq, total, ln in heur_index_mismatch(pous):
         findings.append(Finding(
@@ -2079,7 +3265,7 @@ def analyze(src, profiles=None, lang="ru") -> Report:
                 rule=rule, severity=_sev(rule), title=T(rule),
                 pou=nm, line=i, detail=T(rule), code=ln))
 
-    for nm in dead_pous(root, pous):
+    for nm in dead_pous(root, pous, extra=_xtext):
         findings.append(Finding(
             rule="dead-pou", severity=_sev("dead-pou"), title=T("dead-pou"),
             pou=nm, detail=D("dead-pou", nm=nm)))
